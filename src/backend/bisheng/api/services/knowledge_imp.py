@@ -40,7 +40,6 @@ from bisheng.api.services.patch_130 import (
 from bisheng.api.utils import md5_hash
 from bisheng.api.v1.schemas import ExcelRule
 from bisheng.cache.redis import redis_client
-from bisheng.cache.utils import CACHE_DIR
 from bisheng.cache.utils import file_download
 from bisheng.database.base import session_getter
 from bisheng.database.models.knowledge import Knowledge, KnowledgeDao
@@ -118,10 +117,10 @@ class KnowledgeUtils:
     ):
         if mapping:
             for key, val in mapping.items():
-                mapping[key] = json.dumps(val)
+                mapping[key] = json.dumps(val, ensure_ascii=False)
             redis_client.hset(cache_key, mapping=mapping)
         else:
-            redis_client.hset(cache_key, key=chunk_index, value=json.dumps(value))
+            redis_client.hset(cache_key, key=chunk_index, value=json.dumps(value, ensure_ascii=False))
 
     @classmethod
     def delete_preview_cache(cls, cache_key, chunk_index: int = None):
@@ -536,12 +535,12 @@ def add_file_embedding(
     logger.info(f"upload_preview_file_to_minio file={db_file.id} file_name={db_file.file_name}")
     if db_file.file_name.endswith('.doc'):
         preview_object_name = f'preview/{os.path.basename(filepath).rstrip(".doc")}.docx'
-        if minio_client.object_exists(preview_object_name):
+        if minio_client.object_exists(minio_client.tmp_bucket, preview_object_name):
             minio_client.copy_object(preview_object_name, f'preview/{db_file.id}.docx',
                                      minio_client.tmp_bucket, minio_client.bucket)
     elif db_file.file_name.endswith(('.ppt', '.pptx')):
         preview_object_name = f'preview/{os.path.basename(filepath).rstrip(".doc")}.pdf'
-        if minio_client.object_exists(preview_object_name):
+        if minio_client.object_exists(minio_client.tmp_bucket, preview_object_name):
             minio_client.copy_object(preview_object_name, f'preview/{db_file.id}.pdf',
                                      minio_client.tmp_bucket, minio_client.bucket)
 
@@ -583,7 +582,7 @@ def parse_partitions(partitions: List[Any]) -> Dict:
 
 
 def upload_preview_file_to_minio(original_file_path: str, preview_file_path: str):
-    if os.path.splitext(original_file_path)[0] != os.path.splitext(preview_file_path)[0]:
+    if os.path.basename(original_file_path).split('.')[0] != os.path.basename(preview_file_path).split('.')[0]:
         logger.error(f"原始文件和预览文件路径不匹配: {original_file_path} vs {preview_file_path}")
     object_name = f"preview/{os.path.basename(preview_file_path)}"
     with open(preview_file_path, "rb") as file_obj:
@@ -591,6 +590,22 @@ def upload_preview_file_to_minio(original_file_path: str, preview_file_path: str
         minio_client.upload_minio_file(
             object_name=object_name, file=file_obj, bucket_name=minio_client.tmp_bucket
         )
+    return object_name
+
+
+def parse_document_title(title: str) -> str:
+    """
+    解析文档标题，去除特殊字符和多余空格
+    :param title: 文档标题
+    :return: 处理后的标题
+    """
+    # 去除思考模型的think标签内容
+    title = re.sub("<think>.*</think>", "", title, flags=re.S).strip()
+
+    # 如果有符合md 代码快的标记则去除代码块标记
+    if final_title := extract_code_blocks(title):
+        title = '\n'.join(final_title)
+    return title
 
 
 def read_chunk_text(
@@ -616,6 +631,7 @@ def read_chunk_text(
     # 获取文档总结标题的llm
     try:
         llm = decide_knowledge_llm()
+        knowledge_llm = LLMService.get_knowledge_llm()
     except Exception as e:
         logger.exception("knowledge_llm_error:")
         raise Exception(
@@ -647,7 +663,7 @@ def read_chunk_text(
             input_file_name=input_file,
             header_rows=[
                 excel_rule.header_start_row - 1,  # convert to 0-based index
-                excel_rule.header_end_row,
+                excel_rule.header_end_row - 1,
                 # excel_rule["header_start_row"] - 1,
                 # excel_rule["header_end_row"],
             ],
@@ -655,15 +671,14 @@ def read_chunk_text(
             append_header=excel_rule.append_header,
         )
         # skip following processes and return splited values.
-        return combine_multiple_md_files_to_raw_texts(llm, md_files_path)
+        return combine_multiple_md_files_to_raw_texts(llm=llm, path=md_files_path,
+                                                      abstract_prompt=knowledge_llm.abstract_prompt)
 
     if file_extension_name in ["doc", "docx", "html", "mhtml", "ppt", "pptx"]:
 
         if file_extension_name == "doc":
             # convert doc to docx
-            input_file = convert_doc_to_docx(
-                input_doc_path=input_file, output_dir=CACHE_DIR
-            )
+            input_file = convert_doc_to_docx(input_doc_path=input_file)
             if not input_file:
                 raise Exception(f"failed to convert {file_name} to docx, please check backend log")
 
@@ -683,7 +698,7 @@ def read_chunk_text(
             )
         # 将pptx转为预览文件存到
         if file_extension_name in ['ppt', 'pptx']:
-            ppt_pdf_path = convert_ppt_to_pdf(input_path=input_file, output_dir=CACHE_DIR)
+            ppt_pdf_path = convert_ppt_to_pdf(input_path=input_file)
             if ppt_pdf_path:
                 upload_preview_file_to_minio(input_file, ppt_pdf_path)
         elif file_extension_name == 'doc':
@@ -707,6 +722,7 @@ def read_chunk_text(
                 force_ocr=bool(force_ocr),
                 enable_formular=bool(enable_formula),
                 filter_page_header_footer=bool(filter_page_header_footer),
+                knowledge_id=knowledge_id,
             )
             documents = loader.load()
             parse_type = ParseType.ETL4LM.value
@@ -724,10 +740,13 @@ def read_chunk_text(
         t = time.time()
         for one in documents:
             # 配置了相关llm的话，就对文档做总结
-            title = extract_title(llm, one.page_content)
+            title = extract_title(
+                llm=llm,
+                text=one.page_content,
+                abstract_prompt=knowledge_llm.abstract_prompt,
+            )
             # remove <think>.*</think> tag content
-            title = re.sub("<think>.*</think>", "", title, flags=re.S).strip()
-            one.metadata["title"] = title
+            one.metadata["title"] = parse_document_title(title)
         logger.info("file_extract_title=success timecost={}", time.time() - t)
 
     logger.info(f"start_split_text file_name={file_name}")
