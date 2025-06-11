@@ -1,8 +1,6 @@
-import json
 import os
-import re
 
-from bisheng_langchain.rag.extract_info import extract_title
+from langchain_core.documents import Document
 
 from bisheng.api.services.md_from_docx import handler as docx_handler
 from bisheng.api.services.md_from_excel import handler as excel_handler
@@ -12,49 +10,35 @@ from bisheng.cache.utils import CACHE_DIR
 from bisheng.utils.minio_client import minio_client
 
 
-def combine_multiple_md_files_to_raw_texts(llm, path, abstract_prompt):
+def combine_multiple_md_files_to_raw_texts(path) -> (list[Document], list[Document]):
     """
     combine multiple md file to raw texts including meta-data list.
     Args:
-        llm: for extracting digest title
         path: the directory containing the md files.
+    Returns:
+        0: split raw texts, each text is a Document object.
+        1: a single Document object containing all the texts combined.
     """
 
-    files = [f for f in os.listdir(path)]
+    files = sorted([f for f in os.listdir(path)])
     raw_texts = []
-    metadata_list = []
-    title = ""
-    index = 0
+    document = Document(page_content="", metadata={})
     for file_name in files:
         full_file_name = f"{path}/{file_name}"
         with open(full_file_name, "r", encoding="utf-8") as f:
             content = f.read()
-            if index == 0:
-                title = extract_title(
-                    llm=llm, text=content, abstract_prompt=abstract_prompt
-                )
-                title = re.sub("<think>.*</think>", "", title)
-            raw_texts.append(content)
-            metedata = {
-                "bbox": json.dumps({"chunk_bboxes": ""}),
-                "page": 0,
-                "source": file_name,
-                "title": title,
-                "chunk_index": index,
-                "extra": "",
-            }
-            metadata_list.append(metedata)
-            index += 1
-    return raw_texts, metadata_list, "local", []
+            document.page_content += content + "\n"
+            raw_texts.append(Document(page_content=content, metadata={}))
+    return raw_texts, [document]
 
 
 def convert_file_to_md(
-        file_name,
-        input_file_name,
-        header_rows=[0, 1],
-        data_rows=10,
-        append_header=True,
-        knowledge_id: int = None,
+    file_name,
+    input_file_name,
+    header_rows=[0, 1],
+    data_rows=10,
+    append_header=True,
+    knowledge_id: int = None,
 ):
     """
     处理文件转换的主函数。
@@ -74,18 +58,18 @@ def convert_file_to_md(
     elif file_name.endswith(".pptx") or file_name.endswith(".ppt"):
         md_file_name, local_image_dir, doc_id = pptx_handler(CACHE_DIR, input_file_name)
     elif (
-            file_name.endswith(".xlsx")
-            or file_name.endswith(".xls")
-            or file_name.endswith(".csv")
+        file_name.endswith(".xlsx")
+        or file_name.endswith(".xls")
+        or file_name.endswith(".csv")
     ):
         md_file_name, local_image_dir, doc_id = excel_handler(
             CACHE_DIR, input_file_name, header_rows, data_rows, append_header
         )
         local_image_dir = None
     elif (
-            file_name.endswith(".html")
-            or file_name.endswith(".htm")
-            or file_name.endswith(".mhtml")
+        file_name.endswith(".html")
+        or file_name.endswith(".htm")
+        or file_name.endswith(".mhtml")
     ):
         (
             md_file_name,

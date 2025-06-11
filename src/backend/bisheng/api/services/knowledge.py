@@ -362,6 +362,18 @@ class KnowledgeService(KnowledgeUtils):
                     minio_client.delete_minio(file[1])
 
     @classmethod
+    def get_upload_file_original_name(cls, file_name: str) -> str:
+        """
+        获取上传文件的原始名称
+        """
+        if not file_name:
+            raise ServerError.http_exception("file_name is empty")
+        # 从redis内获取
+        uuid_file_name = file_name.split(".")[0]
+        original_file_name = redis_client.get(uuid_file_name) or file_name
+        return original_file_name
+
+    @classmethod
     def get_preview_file_chunk(
             cls, request: Request, login_user: UserPayload, req_data: KnowledgeFileProcess
     ) -> (str, str, List[FileChunk], Any):
@@ -394,6 +406,7 @@ class KnowledgeService(KnowledgeUtils):
 
         filepath, file_name = file_download(file_path)
         file_ext = file_name.split(".")[-1].lower()
+        file_name = cls.get_upload_file_original_name(file_name)
 
         # 切分文本
         texts, metadatas, parse_type, partitions = read_chunk_text(
@@ -646,9 +659,8 @@ class KnowledgeService(KnowledgeUtils):
         filepath, file_name = file_download(file_info.file_path)
         md5_ = os.path.splitext(os.path.basename(filepath))[0].split("_")[0]
 
-        uuid_file_name = file_name.split(".")[0]
         file_extension_name = file_name.split(".")[-1]
-        original_file_name = redis_client.get(uuid_file_name) or file_name
+        original_file_name = cls.get_upload_file_original_name(file_name)
         # 是否包含重复文件
         content_repeat = KnowledgeFileDao.get_file_by_condition(
             md5_=md5_, knowledge_id=knowledge.id
@@ -1028,9 +1040,7 @@ class KnowledgeService(KnowledgeUtils):
         return True
 
     @classmethod
-    def get_file_share_url(
-            cls, request: Request, login_user: UserPayload, file_id: int
-    ) -> str:
+    def get_file_share_url(cls, file_id: int) -> str:
         file = KnowledgeFileDao.get_file_by_ids([file_id])
         if not file:
             raise NotFoundError.http_exception()
@@ -1041,10 +1051,9 @@ class KnowledgeService(KnowledgeUtils):
         else:
             # 130版本以后的文件解析逻辑，只有源文件和预览文件，不再都转pdf了
             if file.file_name.endswith(".doc"):
-                download_url = cls.get_file_share_url_with_empty(file.object_name.replace(".doc", ".docx"))
+                download_url = cls.get_file_share_url_with_empty(f"preview/{file.id}.docx")
             elif file.file_name.endswith(('.ppt', '.pptx')):
-                download_url = cls.get_file_share_url_with_empty(
-                    file.object_name.replace(".ppt", ".pdf").replace(".pptx", ".pdf"))
+                download_url = cls.get_file_share_url_with_empty(f"preview/{file.id}.pdf")
             else:
                 download_url = cls.get_file_share_url_with_empty(file.object_name)
         return download_url
@@ -1103,9 +1112,8 @@ class KnowledgeService(KnowledgeUtils):
         params = {
             "source_knowledge_id": knowledge.id,
             "target_id": target_knowlege.id,
-            "login_user": login_user,
+            "login_user_id": login_user.user_id,
         }
-        # file_worker.file_copy_celery.delay()
         cls.create_knowledge_hook(request, login_user, target_knowlege)
         file_worker.file_copy_celery.delay(params)
         return target_knowlege
