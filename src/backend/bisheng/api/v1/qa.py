@@ -58,8 +58,7 @@ def get_original_file(message_id: Annotated[int, Body(embed=True)],
     minio_client = MinioClient()
     for index, chunk in enumerate(chunks):
         file = id2file.get(chunk.file_id)
-        if not file:
-            continue
+
         chunk_res = json.loads(json.loads(chunk.meta_data).get('bbox'))
         file_access = json.loads(chunk.meta_data).get('right', True)
         chunk_res['right'] = file_access
@@ -76,6 +75,7 @@ def get_original_file(message_id: Annotated[int, Body(embed=True)],
         chunk_res['score'] = round(match_score(chunk.chunk, keywords),
                                    2) if len(keywords) > 0 else 0
         chunk_res['file_id'] = chunk.file_id
+        chunk_res['parse_type'] = file.parse_type if file else ''
 
         result.append(chunk_res)
 
@@ -129,7 +129,6 @@ def sort_and_filter_all_chunks(keywords, all_chunks, thr=0.0):
         chunk_match_score.append(match_score(chunk, keywords))
 
     sorted_res = sorted(enumerate(chunk_match_score), key=lambda x: -x[1])
-    print(sorted_res)
     remain_chunks = [all_chunks[elem[0]] for elem in sorted_res if elem[1] >= thr]
     if not remain_chunks:
         remain_chunks = [all_chunks[sorted_res[0][0]]]
