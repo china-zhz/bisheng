@@ -21,12 +21,12 @@ export const MarkdownView = ({ noHead = false, data }) => {
     const text = useMemo(() =>
         data.text.replaceAll(/(\n\s{4,})/g, '\n   ') // 禁止4空格转代码
             .replace(/(?<![\n\|])\n(?!\n)/g, '\n\n')
-            .replaceAll('(bisheng/tmp/images', '(/bisheng/tmp/images')
+            .replaceAll('(bisheng/', '(/bisheng/')
         , [data.text])
 
     return <div className="p-4 bg-white rounded-lg shadow-sm border border-gray-200 hover:shadow-md hover:border-primary transition-shadow w-full">
         {!noHead && <p className="text-sm text-gray-500 flex gap-2 mb-1">
-            <span>切片{data.chunkIndex + 1}</span>
+            <span>分段{data.chunkIndex + 1}</span>
             <span>-</span>
             <span>{data.text.length} 字符</span>
         </p>}
@@ -92,7 +92,7 @@ const AceEditorCom = ({ markdown, hidden, onChange, onBlur }) => {
 // 预览编辑
 const VditorEditor = forwardRef(({ defalutValue, hidden, onBlur, onChange }, ref) => {
     const vditorRef = useRef(null);
-    const readyRef = useRef(false);
+    const readyRef = useRef(false); // 保证vditor初始化完成后,再调用实例方法,否则报错 Cannot read properties of undefined (reading 'currentMode')
     const valurCacheRef = useRef('');
     const domRef = useRef(null);
 
@@ -104,7 +104,7 @@ const VditorEditor = forwardRef(({ defalutValue, hidden, onBlur, onChange }, ref
         // console.log('markdown :>> ', markdown);
         const processedMarkdown = defalutValue
             .replace(/^( {4,})/gm, '   ')
-            .replaceAll('(bisheng/tmp/images', '(/bisheng/tmp/images')
+            .replaceAll('(bisheng/', '(/bisheng/')
         if (!hidden && vditorRef.current && readyRef.current) {
             vditorRef.current.setValue(processedMarkdown);
         } else {
@@ -115,7 +115,12 @@ const VditorEditor = forwardRef(({ defalutValue, hidden, onBlur, onChange }, ref
     useImperativeHandle(ref, () => ({
         setValue(val) {
             const processedMarkdown = val.replace(/^( {4,})/gm, '   ')
-            vditorRef.current.setValue(processedMarkdown)
+                .replaceAll('(bisheng/', '(/bisheng/')
+            if (readyRef.current) {
+                vditorRef.current?.setValue(processedMarkdown)
+            } else {
+                valurCacheRef.current = processedMarkdown;
+            }
         }
     }))
 
@@ -125,7 +130,7 @@ const VditorEditor = forwardRef(({ defalutValue, hidden, onBlur, onChange }, ref
             height: '100%',
             toolbarConfig: {
                 hide: true,
-                pin: true,
+                pin: true, 
             },
             mode: 'ir',  // 'sv' for split view, 'ir' for instant rendering
             preview: {
@@ -148,19 +153,19 @@ const VditorEditor = forwardRef(({ defalutValue, hidden, onBlur, onChange }, ref
                 readyRef.current = true;
 
                 if (valurCacheRef.current) {
-                    vditorRef.current.setValue(valurCacheRef.current);
+                    vditorRef.current?.setValue(valurCacheRef.current);
                 }
                 // vditorRef.current.disabled();
             },
             // input: onChange, // 有延时
             blur: () => {
-                const value = vditorRef.current.getValue()
+                const value = vditorRef.current?.getValue()
                 blurRef.current(
                     value,
                     () => {
                         // 还原
                         const processedMarkdown = defalutValue.replace(/^( {4,})/gm, '   ')
-                        vditorRef.current.setValue(processedMarkdown);
+                        vditorRef.current?.setValue(processedMarkdown);
                     }
                 );
                 onChange(value);
