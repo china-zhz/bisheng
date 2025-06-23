@@ -43,7 +43,7 @@ def _get_bisheng_rt_params(params: dict, server_config: dict, model_config: dict
 def _get_openai_params(params: dict, server_config: dict, model_config: dict) -> dict:
     if server_config:
         params.update({
-            'api_key': server_config.get('openai_api_key') or server_config.get('api_key'),
+            'api_key': server_config.get('openai_api_key') or server_config.get('api_key') or "empty",
             'base_url': server_config.get('openai_api_base') or server_config.get('base_url'),
         })
         params['base_url'] = params['base_url'].rstrip('/')
@@ -403,7 +403,7 @@ class BishengLLM(BaseChatModel):
         """更新模型状态"""
         if self.model_info.status != status:
             self.model_info.status = status
-            LLMDao.update_model_status(self.model_id, status, remark[:500])
+            LLMDao.update_model_status(self.model_id, status, remark[-500:])  # 限制备注长度为500字符
 
     def bind_tools(
             self,
