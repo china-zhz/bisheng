@@ -49,7 +49,6 @@ export default function ChatInput({ autoRun, clear, form, wsUrl, onBeforSend, on
         insetNodeRun,
         setShowGuideQuestion
     } = useMessageStore()
-    console.log('ui messages :>> ', messages);
 
     const currentChatIdRef = useRef(null)
     const inputRef = useRef(null)
@@ -503,7 +502,7 @@ export default function ChatInput({ autoRun, clear, form, wsUrl, onBeforSend, on
                 </div>
             </div>
             {/* stop & 重置 */}
-            <div className="absolute w-full flex justify-center bottom-16">
+            <div className="absolute w-full flex justify-center left-0 bottom-16">
                 {!stop.show && <Button
                     className="rounded-full bg-[#fff] dark:bg-[#1B1B1B]"
                     variant="outline"
