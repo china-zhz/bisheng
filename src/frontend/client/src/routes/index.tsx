@@ -1,23 +1,26 @@
 import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom';
 import {
+  ApiErrorWatcher,
   Login,
   Registration,
   RequestPasswordReset,
   ResetPassword,
-  VerifyEmail,
-  ApiErrorWatcher,
   TwoFactorScreen,
+  VerifyEmail,
 } from '~/components/Auth';
-import { AuthContextProvider } from '~/hooks/AuthContext';
-import RouteErrorBoundary from './RouteErrorBoundary';
-import StartupLayout from './Layouts/Startup';
-import LoginLayout from './Layouts/Login';
-import dashboardRoutes from './Dashboard';
-import ShareRoute from './ShareRoute';
-import ChatRoute from './ChatRoute';
-import Search from './Search';
-import Root from './Root';
 import Sop from '~/components/Sop';
+import WebView from '~/components/WebView';
+import { AuthContextProvider } from '~/hooks/AuthContext';
+import AppChat from '~/pages/appChat';
+import AgentCenter from '~/pages/apps';
+import Share from '~/pages/share';
+import ChatRoute from './ChatRoute';
+import LoginLayout from './Layouts/Login';
+import StartupLayout from './Layouts/Startup';
+import Root from './Root';
+import RouteErrorBoundary from './RouteErrorBoundary';
+// import ShareRoute from './ShareRoute';
+import Page404 from '~/pages/Page404';
 
 const AuthLayout = () => (
   <AuthContextProvider>
@@ -32,11 +35,11 @@ const baseConfig = {
 }
 
 export const router = createBrowserRouter([
-  {
-    path: 'share/:shareId',
-    element: <ShareRoute />,
-    errorElement: <RouteErrorBoundary />,
-  },
+  // {
+  //   path: 'share/:shareId',
+  //   element: <ShareRoute />,
+  //   errorElement: <RouteErrorBoundary />,
+  // },
   {
     path: '/',
     element: <StartupLayout />,
@@ -66,7 +69,7 @@ export const router = createBrowserRouter([
     errorElement: <RouteErrorBoundary />,
     children: [
       {
-        path: '/',
+        path: '/' + __APP_ENV__.BISHENG_HOST,
         element: <LoginLayout />,
         children: [
           {
@@ -83,26 +86,52 @@ export const router = createBrowserRouter([
       // dashboardRoutes,
       {
         path: '/',
-        element: <Root />,
+        element: <Root />, // 包含会话列表
         children: [
           {
             index: true,
-            element: <Navigate to="/c/new" replace={true} />,
+            element: <Navigate to="/c/new?" replace={true} />,
           },
           {
             path: 'c/:conversationId?',
             element: <ChatRoute />,
           },
           {
-            path: 'sop/:conversationId?',
+            path: 'linsight/:conversationId?',
             element: <Sop />,
           },
-          // {
-          //   path: 'search',
-          //   element: <Search />,
-          // },
+          {
+            path: 'linsight/case/:sopId',
+            element: <Sop />,
+          },
+          {
+            path: 'apps',
+            element: <AgentCenter />,
+          },
+          {
+            path: 'chat/:conversationId/:fid/:type',
+            element: <AppChat />,
+          },
+          {
+            path: 'share/:token',
+            element: <Share />,
+          },
+          {
+            path: 'share/:token/:vid',
+            element: <Share />,
+          },
         ],
       },
     ],
   },
+  {
+    path: '/html',
+    element: <WebView />,
+  },
+  {
+    path: '/404',
+    element: <Page404 />,
+    errorElement: <RouteErrorBoundary />,
+  },
+  { path: "*", element: <Navigate to="/404" replace /> }
 ], baseConfig);

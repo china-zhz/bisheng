@@ -1,15 +1,15 @@
 import json
 from typing import List
 
-from bisheng_langchain.vectorstores import ElasticKeywordsSearch, Milvus
 from loguru import logger
 from pymilvus import Collection, MilvusException
 
 from bisheng.api.services.knowledge_imp import decide_vectorstores, process_file_task, delete_knowledge_file_vectors, \
     KnowledgeUtils, delete_vector_files
 from bisheng.api.v1.schemas import FileProcessBase
-from bisheng.database.models.knowledge import Knowledge, KnowledgeDao, KnowledgeTypeEnum
-from bisheng.database.models.knowledge_file import (
+from bisheng.core.storage.minio.minio_manager import get_minio_storage_sync
+from bisheng.knowledge.domain.models.knowledge import Knowledge, KnowledgeDao, KnowledgeTypeEnum, KnowledgeState
+from bisheng.knowledge.domain.models.knowledge_file import (
     KnowledgeFile,
     KnowledgeFileDao,
     KnowledgeFileStatus,
@@ -18,8 +18,8 @@ from bisheng.database.models.knowledge_file import (
 )
 from bisheng.interface.embeddings.custom import FakeEmbedding
 from bisheng.utils import generate_uuid
-from bisheng.utils.minio_client import minio_client
 from bisheng.worker import bisheng_celery
+from bisheng_langchain.vectorstores import ElasticKeywordsSearch, Milvus
 
 
 @bisheng_celery.task(acks_late=True)
@@ -78,9 +78,9 @@ def file_copy_celery(param: json) -> str:
             break
     # 恢复状态
     logger.info("file_copy_celery end")
-    source_knowledge.state = 1
     target_knowledge.state = 1
-    KnowledgeDao.update_one(source_knowledge)
+    KnowledgeDao.update_state(knowledge_id=source_knowledge.id, state=KnowledgeState.PUBLISHED,
+                              update_time=source_knowledge.update_time)
     KnowledgeDao.update_one(target_knowledge)
     return "copy task done"
 
@@ -109,19 +109,25 @@ def copy_normal(
     # 迁移 file
     try:
         target_source_file = KnowledgeUtils.get_knowledge_file_object_name(knowledge_new.id, knowledge_new.file_name)
+
+        minio_client = get_minio_storage_sync()
+
         # 拷贝源文件
-        if minio_client.object_exists(minio_client.bucket, source_file):
-            minio_client.copy_object(source_file, target_source_file)
+        if minio_client.object_exists_sync(minio_client.bucket, source_file):
+            minio_client.copy_object_sync(source_bucket=minio_client.bucket, source_object=source_file,
+                                          dest_object=target_source_file, dest_bucket=minio_client.bucket)
         knowledge_new.object_name = target_source_file
 
         # 拷贝生成的pdf文件
-        if minio_client.object_exists(minio_client.bucket, f"{source_file_pdf}"):
-            minio_client.copy_object(source_file, f"{knowledge_new.id}")
+        if minio_client.object_exists_sync(minio_client.bucket, f"{source_file_pdf}"):
+            minio_client.copy_object_sync(source_bucket=minio_client.bucket, source_object=f"{source_file_pdf}",
+                                          dest_object=f"{knowledge_new.id}", dest_bucket=minio_client.bucket)
 
         # 拷贝bbox文件
-        if minio_client.object_exists("bisheng", bbox_file):
+        if minio_client.object_exists_sync(object_name=bbox_file):
             target_bbox_file = KnowledgeUtils.get_knowledge_bbox_file_object_name(knowledge_new.id)
-            minio_client.copy_object(bbox_file, target_bbox_file)
+            minio_client.copy_object_sync(source_bucket=minio_client.bucket, source_object=bbox_file,
+                                          dest_object=target_bbox_file, dest_bucket=minio_client.bucket)
             knowledge_new.bbox_object_name = target_bbox_file
 
         preview_file = None
@@ -132,8 +138,9 @@ def copy_normal(
             target_preview_file = KnowledgeUtils.get_knowledge_preview_file_object_name(knowledge_new.id,
                                                                                         knowledge_new.file_name)
         if preview_file and target_preview_file:
-            if minio_client.object_exists(minio_client.bucket, preview_file):
-                minio_client.copy_object(preview_file, target_preview_file)
+            if minio_client.object_exists_sync(minio_client.bucket, preview_file):
+                minio_client.copy_object_sync(source_bucket=minio_client.bucket, source_object=preview_file,
+                                              dest_object=target_preview_file, dest_bucket=minio_client.bucket)
 
     except Exception as e:
         logger.exception(f"copy_file_error file_id={knowledge_new.id}")
@@ -206,6 +213,14 @@ def copy_vector(
     milvus_db: Milvus = decide_vectorstores(
         target_knowledge.collection_name, "Milvus", embedding
     )
+    # 首次新建一个 collection
+    if milvus_db.col is None:
+        new_col = Collection(name=target_knowledge.collection_name, schema=source_milvus.col.schema,
+                             using=source_milvus.alias,
+                             consistency_level=source_milvus.consistency_level)
+        milvus_db: Milvus = decide_vectorstores(
+            target_knowledge.collection_name, "Milvus", embedding
+        )
     if milvus_db:
         insert_milvus(source_data, fields, milvus_db)
 
@@ -308,7 +323,7 @@ def _parse_knowledge_file(file_id: int, preview_cache_key: str = None, callback_
                       chunk_size=file_rule.chunk_size,
                       chunk_overlap=file_rule.chunk_overlap,
                       callback_url=callback_url,
-                      extra_metadata=db_file.extra_meta,
+                      extra_metadata=db_file.user_metadata,
                       preview_cache_keys=[preview_cache_key],
                       retain_images=file_rule.retain_images,
                       enable_formula=file_rule.enable_formula,
@@ -335,3 +350,18 @@ def retry_knowledge_file_celery(file_id: int, preview_cache_key: str = None, cal
             _parse_knowledge_file(file_id, preview_cache_key, callback_url)
         except Exception as e:
             logger.error("retry_knowledge_file_celery error: {}", str(e))
+
+
+@bisheng_celery.task()
+def delete_knowledge_file_celery(file_ids: List[int], knowledge_id: int, clear_minio: bool = True):
+    """ 异步删除知识文件及其向量 """
+    with logger.contextualize(trace_id=f'delete_file_{knowledge_id}_{file_ids[0]}'):
+        logger.info("delete_knowledge_file_celery start file_ids={}", file_ids)
+        try:
+            knowledge = KnowledgeDao.query_by_id(knowledge_id)
+            if not knowledge:
+                logger.warning(f"knowledge_id={knowledge_id} is deleted, skip delete file")
+                return
+            delete_vector_files(file_ids, knowledge)
+        except Exception as e:
+            logger.error("delete_knowledge_file_celery error: {}", str(e))

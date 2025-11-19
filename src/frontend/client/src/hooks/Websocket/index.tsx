@@ -1,10 +1,10 @@
-import { Children, useCallback, useEffect, useMemo } from "react";
-import { useLinsightManager } from "../useLinsightManager";
-import { MockWebSocket } from "./mock";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { userInputLinsightEvent, userStopLinsightEvent } from "~/api/linsight";
 import { SopStatus } from "~/components/Sop/SOPEditor";
 import { useToastContext } from "~/Providers";
 import { toggleNav } from "~/utils";
+import { useLinsightManager } from "../useLinsightManager";
+import { MockWebSocket } from "./mock";
 const MOCK = false
 
 // 每个会话单独分配一个 WebSocket实例
@@ -13,13 +13,23 @@ const connections: Record<string, WebSocket> = {};
 export const useLinsightWebSocket = (versionId) => {
     const { getLinsight, updateLinsight } = useLinsightManager()
     const { showToast } = useToastContext();
+    const maxRetryCountRef = useRef(5);
 
+    const linsight = getLinsight(versionId);
     const task = useMemo(() => {
         const linsight = getLinsight(versionId);
         return linsight
             ? { versionId, running: linsight.status === SopStatus.Running }
             : { versionId, running: false };
-    }, [getLinsight, versionId]);
+    }, [linsight?.status, versionId]);
+
+    // 使用 ref 存储当前活跃版本 ID
+    const activeVersionIdRef = useRef(versionId);
+
+    // 同步最新活跃版本 ID
+    useEffect(() => {
+        activeVersionIdRef.current = versionId;
+    }, [versionId]);
 
 
     const connect = useCallback((id: string, msg: any) => {
@@ -62,7 +72,11 @@ export const useLinsightWebSocket = (versionId) => {
         websocket.onmessage = (event) => {
             const taskData = JSON.parse(event.data);
             console.log('ws data :>> ', taskData);
-
+            /**
+             * 生成一级任务list
+             * 生成当前一级任务下的二级任务list
+             * 更新生成的任务信息
+             */
             switch (taskData.event_type) {
                 case 'task_generate':
                     // 生成一级任务
@@ -82,7 +96,7 @@ export const useLinsightWebSocket = (versionId) => {
                                 }
                                 parentsToUpdate.get(parentId).push({
                                     id: _task.id,
-                                    name: _task.task_data.target,
+                                    name: _task.task_data.display_target,
                                     status: _task.status,
                                     history: [],
                                 });
@@ -92,7 +106,7 @@ export const useLinsightWebSocket = (versionId) => {
                                 if (!exists) {
                                     updatedTasks.push({
                                         id: _task.id,
-                                        name: _task.task_data.target,
+                                        name: _task.task_data.display_target,
                                         status: _task.status,
                                         history: [],
                                         children: [],
@@ -131,7 +145,7 @@ export const useLinsightWebSocket = (versionId) => {
                     });
                     break;
                 case 'user_input':
-                    const { task_id, call_reason } = taskData.data;
+                    const { task_id, call_reason, params } = taskData.data;
                     updateLinsight(id, (prev) => {
                         const newTasks = prev.tasks.map(task => {
                             if (task.id === task_id) {
@@ -140,12 +154,16 @@ export const useLinsightWebSocket = (versionId) => {
                                     ...task,
                                     status: taskData.event_type,
                                     event_type: taskData.event_type,
-                                    call_reason
+                                    params,
+                                    call_reason,
+                                    history: [...(task.history || []), {
+                                        ...taskData.data
+                                    }]
                                 };
                             } else {
                                 return {
                                     ...task,
-                                    status: taskData.event_type,
+                                    // status: taskData.event_type,
                                     children: task.children.map(child => {
                                         if (child.id === task_id) {
                                             // 更新子任务
@@ -153,7 +171,11 @@ export const useLinsightWebSocket = (versionId) => {
                                                 ...child, // 关键修复：使用 child 而不是 task
                                                 status: taskData.event_type,
                                                 event_type: taskData.event_type,
-                                                call_reason
+                                                params,
+                                                call_reason,
+                                                history: [...(child.history || []), {
+                                                    ...taskData.data
+                                                }]
                                             };
                                         }
                                         return child;
@@ -169,11 +191,12 @@ export const useLinsightWebSocket = (versionId) => {
                 case 'task_end':
                     updateLinsight(id, (prev) => {
                         const newStatus = taskData.data.status
+                        const errorMsg = taskData.data.result?.answer
                         if (!taskData.data.parent_task_id) {
                             // 更新一级任务
                             const newTasks = prev.tasks.map(task =>
                                 task.id === taskData.data.id
-                                    ? { ...task, status: newStatus, event_type: taskData.event_type }
+                                    ? { ...task, status: newStatus, errorMsg, event_type: taskData.event_type }
                                     : task
                             );
                             return { tasks: newTasks };
@@ -184,7 +207,7 @@ export const useLinsightWebSocket = (versionId) => {
                         if (parentIndex === -1) return prev; // 父任务不存在
 
                         const parent = prev.tasks[parentIndex];
-                        const childIndex = parent.children.findIndex(c => c.id === taskData.data.id);
+                        // const childIndex = parent.children.findIndex(c => c.id === taskData.data.id);
 
                         //  更新现有子任务
                         const newTasks = [...prev.tasks];
@@ -192,7 +215,7 @@ export const useLinsightWebSocket = (versionId) => {
                             ...parent,
                             children: parent.children.map(child =>
                                 child.id === taskData.data.id
-                                    ? { ...child, status: newStatus, event_type: taskData.event_type }
+                                    ? { ...child, status: newStatus, errorMsg: newStatus === 'failed' ? errorMsg : '', event_type: taskData.event_type }
                                     : child
                             )
                         };
@@ -230,7 +253,8 @@ export const useLinsightWebSocket = (versionId) => {
                     break;
                 case 'final_result':
                     updateLinsight(id, {
-                        summary: taskData.data.output_result.answer,
+                        output_result: taskData.data.output_result,
+                        // summary: taskData.data.output_result.answer,
                         file_list: taskData.data.output_result.final_files || [],
                         status: SopStatus.completed
                     })
@@ -243,8 +267,14 @@ export const useLinsightWebSocket = (versionId) => {
                     })
                     break;
                 case 'error_message':
-                    console.error(taskData.data.error)
-                    showToast({ message: taskData.data.error, status: 'error' });
+                    console.error(taskData.data.error, id, activeVersionIdRef.current)
+                    if (id === activeVersionIdRef.current) {
+                        updateLinsight(id, {
+                            taskError: taskData.data.error,
+                            status: SopStatus.Stoped
+                        })
+                        // showToast({ message: taskData.data.error, status: 'error' });
+                    }
             }
         };
 
@@ -252,6 +282,13 @@ export const useLinsightWebSocket = (versionId) => {
             console.log(`WebSocket closed for session ${id}`);
             if (connections[id] === websocket) {
                 delete connections[id];
+                if (maxRetryCountRef.current > 0) {
+                    setTimeout(() => {
+                        connect(id, { type: 'relink' })
+                        maxRetryCountRef.current--;
+                    }, 1000);
+                }
+            } else {
             }
         };
 
@@ -267,8 +304,8 @@ export const useLinsightWebSocket = (versionId) => {
         // 当没有连接或连接已关闭时创建新连接
         if (!connections[task.versionId] ||
             connections[task.versionId].readyState !== WebSocket.OPEN) {
-            const msg = { type: 'init' };
-            connect(task.versionId, msg);
+            connect(task.versionId, { type: 'init' });
+            maxRetryCountRef.current = 3;
         }
     }, [task])
 
@@ -282,6 +319,7 @@ export const useLinsightWebSocket = (versionId) => {
             userStopLinsightEvent(versionId)
             updateLinsight(versionId, (prev) => ({
                 ...prev,
+                status: SopStatus.Stoped,
                 tasks: prev.tasks.map(task => ({
                     ...task,
                     status: task.status === "in_progress" ? "terminated" : task.status,
@@ -297,14 +335,41 @@ export const useLinsightWebSocket = (versionId) => {
         toggleNav(true)
     }, [versionId])
 
-    const sendInput = useCallback(({ task_id, user_input }) => {
+    const sendInput = useCallback(({ task_id, user_input, files }) => {
         if (MOCK) {
             const ws = connections[versionId];
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ user_input }));
             }
         } else {
-            userInputLinsightEvent(versionId, task_id, user_input)
+            userInputLinsightEvent(versionId, task_id, user_input, files.map((file) => file.result))
+            // update is_completed user_input files
+            // @ts-ignore
+            updateLinsight(versionId, (prev) => ({
+                ...prev,
+                tasks: prev.tasks.map(task => ({
+                    ...task,
+                    status: task_id === task.id ? "success" : task.status,
+                    history: task.history?.map(h => ({
+                        ...h,
+                        is_completed: true,
+                        user_input: h.user_input || user_input,
+                        files: h.files || files
+                    })),
+                    children: task.children
+                        ? task.children.map(child => ({
+                            ...child,
+                            status: task_id === child.id ? "success" : child.status,
+                            history: child.history?.map(h => ({
+                                ...h,
+                                is_completed: true,
+                                user_input: h.user_input || user_input,
+                                files: h.files || files
+                            })),
+                        }))
+                        : [],
+                })),
+            }));
         }
     }, [versionId]);
 

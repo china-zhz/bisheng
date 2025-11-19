@@ -1,11 +1,22 @@
 from enum import Enum
+from typing import Optional
 
-# 工具 执行历史记录的buffer大小，token来计算
-DefaultToolBuffer = 20000
-# 单个任务最大执行步骤数，防止死循环
-MaxSteps = 200
-RetryNum = 3  # 重试次数
-RetrySleep = 5  # 重试间隔时间（秒）
+from pydantic import BaseModel, Field
+
+
+class ExecConfig(BaseModel):
+    debug: bool = Field(default=False, description="是否是调试模式。开启后会记录llm的输入和输出")
+    debug_id: Optional[str] = Field(default=None, description="调试记录唯一ID, 用来写唯一的文件")
+    tool_buffer: int = Field(default=50000, description='工具执行历史记录的最大token，超过后需要总结下历史记录')
+    max_steps: int = Field(default=200, description='单个任务最大执行步骤数，防止死循环')
+    retry_num: int = Field(default=3, description='灵思任务执行过程中模型调用重试次数')
+    retry_sleep: int = Field(default=5, description='灵思任务执行过程中模型调用重试间隔时间（秒）')
+    max_file_num: int = Field(default=5, description='生成SOP时，prompt里放的用户上传文件信息的数量')
+    retry_temperature: float = Field(default=1, description='重试时的模型温度')
+    file_content_length: int = Field(default=5000, description='拆分子任务时读取文件内容的字符数，超过后会截断')
+    max_file_content_num: int = Field(default=3, description='拆分子任务时读取的中间过程文件数量，按时间倒序')
+
+
 CallUserInputToolName = "call_user_input"
 
 

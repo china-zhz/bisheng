@@ -1,11 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { PencilLineIcon } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
-import { useLinsightManager, useLinsightSessionManager } from '~/hooks/useLinsightManager';
-import { Button, Textarea } from '../ui';
-import Markdown from './Markdown';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { saveSop, startLinsight } from '~/api/linsight';
-
+import { useLinsightManager, useLinsightSessionManager } from '~/hooks/useLinsightManager';
+import { useLocalize } from '~/hooks';
+import { Button, Textarea } from '../ui';
+import SopMarkdown from './SopMarkdown';
+import ErrorDisplay from './components/ErrorDisplay';
+import { ShareSameSopControls } from '.';
 
 export const enum SopStatus {
     /* 未开始 */
@@ -34,6 +36,7 @@ const slideDownAnimation = {
 // 重新规划
 const SOPEditorArea = ({ setOpenAreaText, onsubmit }) => {
     const [value, setValue] = useState('');
+    const localize = useLocalize();
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -55,21 +58,22 @@ const SOPEditorArea = ({ setOpenAreaText, onsubmit }) => {
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder='请在此提出 SOP 重新规划方向的建议'
+            placeholder={localize('com_sop_replan_placeholder')}
             className='border-none ![box-shadow:initial]' />
         <div className='flex justify-end gap-2'>
             <Button variant="outline" className="px-6" onClick={() => setOpenAreaText(false)}>
-                取消
+                {localize('com_ui_cancel')}
             </Button>
-            <Button disabled={value === ''} className="px-6" onClick={submit}>确认重新规划</Button>
+            <Button disabled={value === ''} className="px-6" onClick={submit}>{localize('com_sop_confirm_replan')}</Button>
         </div>
     </div>
 }
 
-export const SOPEditor = ({ versionId, setIsLoading }) => {
+export const SOPEditor = ({ versionId, isSharePage, sopError, onRun }) => {
     const [openAreaText, setOpenAreaText] = useState(false)
     const { getLinsight, updateLinsight } = useLinsightManager()
     const markdownRef = useRef(null)
+    const localize = useLocalize()
 
     const linsight = useMemo(() => {
         const linsight = getLinsight(versionId)
@@ -89,6 +93,8 @@ export const SOPEditor = ({ versionId, setIsLoading }) => {
                     if (res.status_code === 200) {
                         updateLinsight(versionId, { sop, status: SopStatus.Running })
                     }
+
+                    onRun()
                 })
             }
         }).catch(err => {
@@ -113,6 +119,40 @@ export const SOPEditor = ({ versionId, setIsLoading }) => {
 
     const showSopEdit = [SopStatus.Running, SopStatus.completed, SopStatus.FeedbackCompleted, SopStatus.Stoped].includes(linsight.status)
 
+    // auto save
+    const sopValueFuncRef = useRef<null | ((id) => void)>(null)
+    const [disabled, setDisabled] = useStartDisable(linsight.status, linsight.sop)
+    const handleChange = (val) => {
+        console.log('sop input :>> ');
+        sopValueFuncRef.current = (_v) => {
+            saveSop({
+                sop_content: val,
+                linsight_session_version_id: _v
+            }).then(res => {
+                if (res.status_code === 200) {
+                    updateLinsight(_v, { sop: val, inputSop: true })
+                }
+            }).catch(err => {
+                console.error('err :>> ', err);
+            })
+        }
+
+        setDisabled(val.trim() === '')
+    }
+    useEffect(() => {
+        const timer = setInterval(() => {
+            if (sopValueFuncRef.current) {
+                sopValueFuncRef.current(versionId)
+                sopValueFuncRef.current = null
+            }
+        }, 2000);
+
+        return () => {
+            clearInterval(timer)
+            sopValueFuncRef.current?.(versionId)
+            sopValueFuncRef.current = null
+        }
+    }, [versionId])
 
     return (
         <motion.div
@@ -121,16 +161,27 @@ export const SOPEditor = ({ versionId, setIsLoading }) => {
             animate={{ width: showSopEdit ? '30%' : '70%' }}
             transition={{ duration: 0.3, ease: "easeInOut" }}
         >
-            <div className='flex items-center gap-2 border-b border-b-[#E8E9ED] bg-[#FDFEFF] p-2 px-4 text-[13px] text-[#737780] rounded-t-2xl'>
-                <PencilLineIcon size={14} />
-                SOP编辑器
+            <div className='flex items-center justify-between border-b border-b-[#E8E9ED] bg-[#FDFEFF] p-2 px-4 text-[13px] text-[#737780] rounded-t-2xl'>
+                <div className='flex items-center gap-2'>
+                    <PencilLineIcon size={14} />
+                    {localize('com_sop_editor_title')}
+                </div>
+                {/* <CopyButton text={linsight.sop} /> */}
             </div>
 
-            <div className='p-8 linsight-markdown flex-1 min-h-0'>
-                <Markdown ref={markdownRef} value={linsight.sop} files={linsight.files} tools={linsight.tools} edit={showSopEdit} />
+            {linsight.status === SopStatus.SopGenerating && !linsight.sop?.trim() && <p className='p-6 text-sm flex gap-2'>
+                <img className='size-5' src={__APP_ENV__.BASE_URL + '/assets/load.webp'} alt="" />
+            </p>}
+            {linsight.sopError &&
+                <div className='p-2 m-2'>
+                    <ErrorDisplay title={localize('com_sop_sop_generation_failed')} taskError={linsight.sopError} />
+                </div>
+            }
+            <div className={`p-8 linsight-markdown flex-1 min-h-0 ${linsight.sopError && 'visible-none'}`}>
+                <SopMarkdown ref={markdownRef} linsight={linsight} hidden={linsight.sopError} disable={showSopEdit || isSharePage} onChange={handleChange} />
             </div>
 
-            {linsight.status === SopStatus.SopGenerated && (
+            {linsight.status === SopStatus.SopGenerated && !isSharePage && (
                 <AnimatePresence>
                     <motion.div
                         className='absolute bottom-6 w-full'
@@ -139,19 +190,19 @@ export const SOPEditor = ({ versionId, setIsLoading }) => {
                         {!openAreaText ? (
                             <div className='linsight-card w-10/12 mx-auto relative'>
                                 {/* <span className='text-lg'>SOP</span> */}
-                                <p className='mt-3 text-sm flex gap-2'>
-                                    <div className="size-5 rounded-full bg-[radial-gradient(circle_at_center,_white_0%,_white_10%,_#143BFF_80%,_#143BFF_100%)] shadow-xl"></div>
-                                    确认是否可以按照 SOP 执⾏任务
+                                <p className='mt-0.5 text-sm flex gap-2'>
+                                    <img className='size-5' src={__APP_ENV__.BASE_URL + '/assets/load.webp'} alt="" />
+                                    {localize('com_sop_confirm_execution')}
                                 </p>
-                                <div className='absolute right-4 bottom-4 flex gap-2'>
+                                <div className='absolute right-4 bottom-3 flex gap-2'>
                                     <Button variant="outline" className="px-3" onClick={() => {
                                         const sop = markdownRef.current.getValue()
                                         sop?.trim() === '' ? handleReExcute('') : setOpenAreaText(true)
                                     }}>
-                                        重新生成 SOP
+                                        {localize('com_sop_regenerate_manual')}
                                     </Button>
-                                    <Button className="px-6" onClick={handleRun}>
-                                        开始执行
+                                    <Button className="px-6" disabled={sopError || disabled} onClick={handleRun}>
+                                        {localize('com_sop_start_execution')}
                                     </Button>
                                 </div>
                             </div>
@@ -161,7 +212,27 @@ export const SOPEditor = ({ versionId, setIsLoading }) => {
                     </motion.div>
                 </AnimatePresence>
             )}
+
+            {
+                linsight.status === SopStatus.SopGenerated && isSharePage && <ShareSameSopControls name={linsight.title} />
+            }
         </motion.div>
     );
 };
 
+
+const useStartDisable = (status: SopStatus, sop: string) => {
+    const [disabled, setDisabled] = useState(false)
+    const _sop = sop.trim()
+    useEffect(() => {
+        if (status === SopStatus.SopGenerating) {
+            setDisabled(false)
+        }
+    }, [status])
+
+    useEffect(() => {
+        setDisabled(_sop === '')
+    }, [sop])
+
+    return [disabled, setDisabled]
+}

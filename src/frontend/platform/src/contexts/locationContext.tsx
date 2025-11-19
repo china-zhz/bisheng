@@ -72,7 +72,8 @@ export function LocationProvider({ children }: { children: ReactNode }) {
     getAppConfig()
       .then(res => {
         // Set all config values that come from getAppConfig
-        setAppConfig({
+        setAppConfig((prev) => ({
+          ...prev,
           isDev: res.env === 'dev',
           libAccepts: res.uns_support,
           officeUrl: res.office_url,
@@ -83,9 +84,9 @@ export function LocationProvider({ children }: { children: ReactNode }) {
           chatPrompt: !!res.application_usage_tips,
           noFace: !res.show_github_and_help,
           register: !!res.enable_registration,
-          uploadFileMaxSize: res.uploaded_files_maximum_size || 50,
+          uploadFileMaxSize: res.uploaded_files_maximum_size || 200,
           enableEtl4lm: res.enable_etl4lm
-        });
+        }));
 
         // backend version
         res.version && console.log(

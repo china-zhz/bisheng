@@ -46,6 +46,8 @@ export enum QueryKeys {
   conversationTags = 'conversationTags',
   health = 'health',
   userTerms = 'userTerms',
+  getLinsightCount = 'getLinsightCount',
+  getWorkspaceModel = 'getWorkspaceModel',
   banner = 'banner',
 }
 
@@ -69,5 +71,5 @@ export enum MutationKeys {
   deleteUser = 'deleteUser',
   updateRole = 'updateRole',
   enableTwoFactor = 'enableTwoFactor',
-  verifyTwoFactor = 'verifyTwoFactor',
+  verifyTwoFactor = 'verifyTwoFactor'
 }

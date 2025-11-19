@@ -9,27 +9,39 @@ import { useAssistantStore } from "@/store/assistantStore";
 import { OnlineState } from "@/types/flow";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useParams } from "react-router";
-import { unstable_useBlocker as useBlocker, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router";
+import { unstable_useBlocker as useBlocker, useNavigate, useParams } from "react-router-dom";
 import Header from "./Header";
 import Prompt from "./Prompt";
 import Setting from "./Setting";
 import TestChat from "./TestChat";
+import { checkAppEditPermission } from "@/controllers/API/flow";
 
 export default function editAssistant() {
     const { t } = useTranslation()
     const { id: assisId } = useParams()
     const navigate = useNavigate()
+    const { state } = useLocation();
+    const loca = state?.flow; // 获取传递的 flow 数据
+
     // assistant data
     const { assistantState, changed, loadAssistantState, changeStatus, saveAfter, destroy } = useAssistantStore()
     const { startNewRound, insetSystemMsg, insetBsMsg, destory, setShowGuideQuestion } = useMessageStore()
+    const [checking, setChecking] = useState(true)
 
-    useEffect(() => {
+    const flowInit = async () => {
+        await checkAppEditPermission(assisId, 5)
+        
         loadAssistantState(assisId, 'v1').then((res) => {
+            setChecking(false)
             setShowGuideQuestion(true)
             setGuideQuestion(res.guide_question?.filter((item) => item) || [])
             res.guide_word && insetBsMsg(res.guide_word)
         })
+    }
+
+    useEffect(() => {
+        flowInit()
     }, [])
 
     // 展示的引导词独立存储
@@ -131,14 +143,16 @@ export default function editAssistant() {
 
     const [showApiPage, setShowApiPage] = useState(false)
     // 离开保存
-    const blocker = useBeforeUnload(changed)
+    const blocker = useBeforeUnload(changed, checking)
     const handleSaveAndClose = async () => {
         await handleSave(true)
         blocker.proceed?.()
     }
 
+    if (checking) return null
+
     return <div className="bg-background-main">
-        <Header onSave={() => handleSave(true)} onLine={handleOnline} onTabChange={(t) => setShowApiPage(t === 'api')}></Header>
+        <Header loca={loca} onSave={() => handleSave(true)} onLine={handleOnline} onTabChange={(t) => setShowApiPage(t === 'api')}></Header>
         <div className="h-[calc(100vh-70px)]">
             <div className={`flex h-full ${showApiPage ? 'hidden' : ''}`}>
                 <div className="w-[60%]">
@@ -186,11 +200,12 @@ export default function editAssistant() {
 
 
 // 离开页面保存提示
-const useBeforeUnload = (changed) => {
+const useBeforeUnload = (changed, checking) => {
     const { t } = useTranslation()
 
     // 离开提示保存
     useEffect(() => {
+        if (checking) return // 检查是否有权限中不提示
         const fun = (e) => {
             var confirmationMessage = `${t('flow.unsavedChangesConfirmation')}`;
             (e || window.event).returnValue = confirmationMessage; // Compatible with different browsers
@@ -198,7 +213,7 @@ const useBeforeUnload = (changed) => {
         }
         window.addEventListener('beforeunload', fun);
         return () => { window.removeEventListener('beforeunload', fun) }
-    }, [])
+    }, [checking])
 
     return useBlocker(changed);
 }

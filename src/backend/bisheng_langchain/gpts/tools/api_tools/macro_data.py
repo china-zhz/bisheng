@@ -2,10 +2,11 @@ import json
 import time
 from typing import Any
 
+import httpx
 import pandas as pd
 import requests
-from pydantic import BaseModel, Field
 from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field
 
 from .base import MultArgsSchemaTool
 
@@ -24,8 +25,8 @@ class MacroData(BaseModel):
 以及社融分项包括：人民币贷款，外币贷款，委托贷款，\
 信托贷款，未贴现银行承兑汇票，企业债券，非金融企业境内股票融资
         """
-        url = 'http://data.mofcom.gov.cn/datamofcom/front/gnmy/shrzgmQuery'
-        r = requests.post(url)
+        url = 'https://data.mofcom.gov.cn/datamofcom/front/gnmy/shrzgmQuery'
+        r = httpx.post(url)
         data_json = r.json()
         temp_df = pd.DataFrame(data_json)
         temp_df.columns = [
@@ -106,7 +107,8 @@ class MacroData(BaseModel):
             'sec-fetch-dest': 'empty',
             'sec-fetch-mode': 'cors',
             'sec-fetch-site': 'same-site',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36',  # noqa
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36',
+            # noqa
             'x-app-id': 'rU6QIu7JHe2gOUeR',
             'x-csrf-token': '',
             'x-version': '1.0.0',
@@ -136,7 +138,8 @@ class MacroData(BaseModel):
         """
         url = 'https://datacenter-web.eastmoney.com/api/data/v1/get'
         params = {
-            'columns': 'REPORT_DATE,TIME,NATIONAL_SAME,NATIONAL_BASE,NATIONAL_SEQUENTIAL,NATIONAL_ACCUMULATE,CITY_SAME,CITY_BASE,CITY_SEQUENTIAL,CITY_ACCUMULATE,RURAL_SAME,RURAL_BASE,RURAL_SEQUENTIAL,RURAL_ACCUMULATE',  # noqa
+            'columns': 'REPORT_DATE,TIME,NATIONAL_SAME,NATIONAL_BASE,NATIONAL_SEQUENTIAL,NATIONAL_ACCUMULATE,CITY_SAME,CITY_BASE,CITY_SEQUENTIAL,CITY_ACCUMULATE,RURAL_SAME,RURAL_BASE,RURAL_SEQUENTIAL,RURAL_ACCUMULATE',
+            # noqa
             'pageNumber': '1',
             'pageSize': '2000',
             'sortColumns': 'REPORT_DATE',
@@ -313,7 +316,8 @@ M0数量（单位：亿元），M0 同比（单位：%），M0 环比（单位�
         """
         url = 'https://datacenter-web.eastmoney.com/api/data/v1/get'
         params = {
-            'columns': 'REPORT_DATE,TIME,BASIC_CURRENCY,BASIC_CURRENCY_SAME,BASIC_CURRENCY_SEQUENTIAL,CURRENCY,CURRENCY_SAME,CURRENCY_SEQUENTIAL,FREE_CASH,FREE_CASH_SAME,FREE_CASH_SEQUENTIAL',  # noqa
+            'columns': 'REPORT_DATE,TIME,BASIC_CURRENCY,BASIC_CURRENCY_SAME,BASIC_CURRENCY_SEQUENTIAL,CURRENCY,CURRENCY_SAME,CURRENCY_SEQUENTIAL,FREE_CASH,FREE_CASH_SAME,FREE_CASH_SEQUENTIAL',
+            # noqa
             'pageNumber': '1',
             'pageSize': '2000',
             'sortColumns': 'REPORT_DATE',
@@ -380,10 +384,12 @@ M0数量（单位：亿元），M0 同比（单位：%），M0 环比（单位�
         """
         url = 'https://datacenter-web.eastmoney.com/api/data/v1/get'
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.138 Safari/537.36',  # noqa
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.138 Safari/537.36',
+            # noqa
         }
         params = {
-            'columns': 'REPORT_DATE,TIME,RETAIL_TOTAL,RETAIL_TOTAL_SAME,RETAIL_TOTAL_SEQUENTIAL,RETAIL_TOTAL_ACCUMULATE,RETAIL_ACCUMULATE_SAME',  # noqa
+            'columns': 'REPORT_DATE,TIME,RETAIL_TOTAL,RETAIL_TOTAL_SAME,RETAIL_TOTAL_SEQUENTIAL,RETAIL_TOTAL_ACCUMULATE,RETAIL_ACCUMULATE_SAME',
+            # noqa
             'pageNumber': '1',
             'pageSize': '1000',
             'sortColumns': 'REPORT_DATE',
@@ -559,10 +565,10 @@ if __name__ == '__main__':
     # start_date = ''
     # end_date = ''
     # print(MacroData.china_ppi(start_date=start_date, end_date=end_date))
-    # print(MacroData.china_shrzgm(start_date=start_date, end_date=end_date))
+    print(MacroData.china_shrzgm(start_date=tmp_start_date, end_date=tmp_end_date))
     # print(MacroData.china_consumer_goods_retail(start_date=start_date, end_date=end_date))
     # print(MacroData.china_cpi(start_date=start_date, end_date=end_date))
     # print(MacroData.china_pmi(start_date=start_date, end_date=end_date))
     # print(MacroData.china_money_supply(start_date=start_date, end_date=end_date))
     # print(MacroData.china_gdp_yearly(start_date=start_date, end_date=end_date))
-    print(MacroData.bond_zh_us_rate(start_date=tmp_start_date, end_date=tmp_end_date))
+    # print(MacroData.bond_zh_us_rate(start_date=tmp_start_date, end_date=tmp_end_date))

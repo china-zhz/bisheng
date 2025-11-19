@@ -1,5 +1,4 @@
 import { ToastIcon } from "@/components/bs-icons";
-import { AvatarIcon } from "@/components/bs-icons/avatar";
 import { LoadIcon, LoadingIcon } from "@/components/bs-icons/loading";
 import { cname } from "@/components/bs-ui/utils";
 import MessageMarkDown from "@/pages/BuildPage/flow/FlowChat/MessageMarkDown";
@@ -11,6 +10,9 @@ import { useMemo, useRef, useState } from "react";
 import MessageButtons from "./MessageButtons";
 import SourceEntry from "./SourceEntry";
 import { useMessageStore } from "./messageStore";
+import { useLinsightConfig } from "@/pages/ModelPage/manage/tabs/WorkbenchModel";
+import { AudioPlayComponent } from "@/components/voiceFunction/audioPlayButton";
+
 
 // 颜色列表
 const colorList = [
@@ -55,7 +57,7 @@ export const ReasoningLog = ({ loading, msg = '' }) => {
     </div>
 }
 
-export default function MessageBs({ debug, mark = false, logo, data, onUnlike = () => { }, onSource, onMarkClick }: { logo: string, data: ChatMessageType, onUnlike?: any, onSource?: any }) {
+export default function MessageBs({ debug,start,version, mark = false, logo, data, onUnlike = () => { }, onSource, onMarkClick, chat }: { logo: string, data: ChatMessageType, onUnlike?: any, onSource?: any }) {
     const avatarColor = colorList[
         (data.sender?.split('').reduce((num, s) => num + s.charCodeAt(), 0) || 0) % colorList.length
     ]
@@ -70,6 +72,7 @@ export default function MessageBs({ debug, mark = false, logo, data, onUnlike = 
         // api data.id
         copyText(messageRef.current)
     }
+    const { data: linsightConfig, isLoading: loading, refetch: refetchConfig, error } = useLinsightConfig();
 
     const chatId = useMessageStore(state => state.chatId)
 
@@ -85,15 +88,10 @@ export default function MessageBs({ debug, mark = false, logo, data, onUnlike = 
                 </div>
                 <div className="min-h-8 px-6 py-4 rounded-2xl bg-[#F5F6F8] dark:bg-[#313336]">
                     <div className="flex gap-2">
-                        {logo ? <div className="max-w-6 min-w-6 max-h-6 rounded-full overflow-hidden">
-                            <img className="w-6 h-6" src={logo} />
-                        </div>
-                            : <div className="w-6 h-6 min-w-6 flex justify-center items-center rounded-full" style={{ background: avatarColor }} >
-                                <AvatarIcon />
-                            </div>}
+                        {logo}
                         {data.message.toString() ?
                             <div ref={messageRef} className="text-sm max-w-[calc(100%-24px)]">
-                                {<MessageMarkDown message={message} />}
+                                {<MessageMarkDown message={message} version={version}/>}
                                 {/* @user */}
                                 {data.receiver && <p className="text-blue-500 text-sm">@ {data.receiver.user_name}</p>}
                                 {/* 光标 */}
@@ -103,6 +101,28 @@ export default function MessageBs({ debug, mark = false, logo, data, onUnlike = 
                         }
                     </div>
                 </div>
+                <div className={`text-right group-hover:opacity-100 opacity-0`}>
+                    {linsightConfig?.tts_model?.id && (version !== 'v2')&& (
+                        <AudioPlayComponent
+                            messageId={String(data.id)}
+                            msg={message}
+                        />
+                    )}
+                </div>
+                <div className="flex justify-end mt-2">
+                    {start && <MessageButtons
+                            mark={mark}
+                            id={data.id}
+                            data={data.liked}
+                            onUnlike={onUnlike}
+                            onCopy={handleCopyMessage}
+                            onMarkClick={onMarkClick}
+                            version={version}
+                            debug={debug}
+                            text={data?.message || data.thought}
+                        ></MessageButtons>}
+                </div>
+
             </>}
             {/* 附加信息 */}
             {
@@ -124,6 +144,9 @@ export default function MessageBs({ debug, mark = false, logo, data, onUnlike = 
                         onUnlike={onUnlike}
                         onCopy={handleCopyMessage}
                         onMarkClick={onMarkClick}
+                        version={version}
+                        debug={debug}
+                        text={data?.message || data.thought}
                     ></MessageButtons>}
                 </div>
             }

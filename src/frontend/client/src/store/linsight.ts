@@ -1,5 +1,5 @@
 // src/state/linsightState.ts
-import { atom, atomFamily, selectorFamily, useRecoilState } from 'recoil';
+import { atom, atomFamily } from 'recoil';
 import { ExtendedFile } from '~/common';
 
 export type LinsightInfo = {
@@ -9,6 +9,9 @@ export type LinsightInfo = {
     org_knowledge_enabled: boolean;
     personal_knowledge_enabled: boolean;
     sop: null | string;
+    sopError: string;
+    /** 用户输入的sop */
+    inputSop: boolean;
     // sop_map: { [key in string]: string };
     status: string;
     execute_feedback: null | string;
@@ -39,14 +42,17 @@ export type LinsightInfo = {
         input_prompt: string | null;
         user_input: string | null;
         history: {
+            user_input: any;
             step: string;
         }[] | null;
         status: string;
         result: any | null;
         children: any[]
     }[],
+    taskError: string;
     summary: string;
-    file_list: any[]
+    file_list: any[];
+    queueCount: number;
 }
 
 interface ApiTool {
@@ -89,6 +95,7 @@ export type SubmissionState = {
     model: string;
     enableWebSearch: boolean;
     useKnowledgeBase: boolean;
+    prevVersionId?: string;
 };
 
 // 使用atomFamily管理每个会话的状态 会话id-版本id:状态
@@ -99,6 +106,7 @@ export const submissionState = atomFamily<SubmissionState | null, string>({
 
 // 上传文件管理
 export const filesByIndex = atomFamily<Map<string, ExtendedFile>, string | number>({
-  key: 'linsightFilesByIndex',
-  default: new Map(),
+    key: 'linsightFilesByIndex',
+    default: new Map(),
 });
+

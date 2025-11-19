@@ -5,6 +5,7 @@ import CodePythonItem from "./component/CodePythonItem";
 import ConditionItem from "./component/ConditionItem";
 import FileTypeSelect from "./component/FileTypeSelect";
 import HistoryNumItem from "./component/HistoryNumItem";
+import ImagePromptItem from "./component/ImagePromptItem";
 import InputFormItem from "./component/InputFormItem";
 import InputItem from "./component/InputItem";
 import InputListItem from "./component/InputListItem";
@@ -13,6 +14,7 @@ import KnowledgeSelectItem from "./component/KnowledgeSelectItem";
 import ModelItem from "./component/ModelItem";
 import OutputItem from "./component/OutputItem";
 import ReportItem from "./component/ReportItem";
+import RetrievalWeightSlider from "./component/RetrievalWeightSlider";
 import SliderItem, { SwitchSliderItem } from "./component/SliderItem";
 import SqlConfigItem from "./component/SqlConfigItem";
 import SwitchItem from "./component/SwitchItem";
@@ -22,44 +24,50 @@ import VarItem from "./component/VarItem";
 import VarSelectItem, { VarSelectSingleItem } from "./component/VarSelectItem";
 import VarTextareaItem from "./component/VarTextareaItem";
 import VarTextareaUploadItem from "./component/VarTextareaUploadItem";
-import ImagePromptItem from "./component/ImagePromptItem";
+import MetadataFilter from "./component/MetadataFilter";
+import { useEffect, useState } from "react";
 
-// 节点表单项
-export default function Parameter({ node, nodeId, item, onOutPutChange, onStatusChange, onFouceUpdate, onVarEvent }
-    : {
-        nodeId: string,
-        node: WorkflowNode,
-        item: WorkflowNodeParam,
-        onOutPutChange: (key: string, value: any) => void
-        onStatusChange: (key: string, obj: any) => void
-        onVarEvent: (key: string, obj: any) => void
-        onFouceUpdate: () => void
-    }) {
+export default function Parameter({ 
+  node, 
+  nodeId, 
+  item, 
+  onOutPutChange, 
+  onStatusChange, 
+  onFouceUpdate, 
+  onVarEvent,
+  selectedKnowledgeIds
+}: {
+  nodeId: string;
+  node: WorkflowNode;
+  item: WorkflowNodeParam;
+  onOutPutChange: (key: string, value: any) => void;
+  onStatusChange: (key: string, obj: any) => void;
+  onVarEvent: (key: string, obj: any) => void;
+  onFouceUpdate: () => void;
+}) {
+    
+  const handleOnNewValue = (newValue: any, validate?: any) => {
+    item.value = newValue;
+    if (validate) bindValidate(validate);
+  };
 
-    const handleOnNewValue = (newValue: any, validate?: any) => {
-        // 更新by引用(视图更新再组件内部完成)
-        item.value = newValue;
-        // Set state to pending
-    }
+  const bindValidate = (validate: any) => {
+    onStatusChange(item.key, { param: item, validate });
+  };
 
-    const bindValidate = (validate) => {
-        validate && onStatusChange(item.key, { param: item, validate })
-    }
+  const bindVarValidate = (validate: any) => {
+    onVarEvent(item.key, { param: item, validate });
+  };
 
-    const bindVarValidate = (validate) => {
-        onVarEvent(item.key, { param: item, validate })
-    }
+  if (item.hidden) return null;
 
-    if (item.hidden) return null
-
-    // 渲染逻辑根据 `type` 返回不同的组件
-    switch (item.type) {
+   switch (item.type) {
         case 'textarea':
             return <TextAreaItem data={item} onChange={handleOnNewValue} />;
         case 'input':
             return <InputItem data={item} onChange={handleOnNewValue} />;
         case 'input_list':
-            return <InputListItem data={item} dict={item.key === "preset_question"} onChange={handleOnNewValue} />;
+            return <InputListItem node={node} data={item} preset={item.key === "preset_question"} onChange={handleOnNewValue} />;
         case 'var':
             return <VarItem data={item} />
         case 'chat_history_num':
@@ -122,7 +130,7 @@ export default function Parameter({ node, nodeId, item, onOutPutChange, onStatus
         case 'code':
             return <CodePythonItem data={item} onChange={handleOnNewValue} />;
         case 'code_output':
-            return <CodeOutputItem data={item} onChange={handleOnNewValue} onValidate={bindValidate} />;
+            return <CodeOutputItem nodeId={nodeId} data={item} onChange={handleOnNewValue} onValidate={bindValidate} />;
         case 'add_tool':
             return <ToolItem data={item} onChange={handleOnNewValue} />;
         case 'condition':
@@ -146,11 +154,23 @@ export default function Parameter({ node, nodeId, item, onOutPutChange, onStatus
                 })
                 imageFileItem.hidden = val === 'file'
                 handleOnNewValue(val)
-                onFouceUpdate()
+                // onFouceUpdate()
             }} />;
         case 'image_prompt':
             return <ImagePromptItem nodeId={nodeId} data={item} onChange={handleOnNewValue} onVarEvent={bindVarValidate} />;
+        case 'search_switch':
+            return <RetrievalWeightSlider data={item} onChange={handleOnNewValue}  onValidate={bindValidate} />;
+        case "metadata_filter": return (
+            <MetadataFilter 
+            data={item} 
+            node ={node}
+            onChange={handleOnNewValue} 
+            onValidate={bindValidate} 
+            selectedKnowledgeIds={selectedKnowledgeIds}
+             nodeId={nodeId}
+            />
+        );
         default:
-            return <div>Unsupported parameter type</div>;
+            return <div>Unsupported parameter type,{item.type}</div>;
     }
 };

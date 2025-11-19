@@ -1,29 +1,26 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from bisheng.database.constants import ToolPresetType
+from bisheng.database.models.linsight_sop import LinsightSOPRecord
+from bisheng_langchain.linsight.event import NeedUserInput
 
 
 class ToolChildrenSchema(BaseModel):
     id: int = Field(..., description="工具id")
-    name: str = Field(..., description="工具名称")
-    tool_key: str = Field(..., description="工具key")
+    name: Optional[str] = Field(None, description="工具名称")
+    tool_key: Optional[str] = Field(None, description="工具key")
+    desc: Optional[str] = Field(None, description="工具描述")
 
 
 # 选择的toolSchema
 class LinsightToolSchema(BaseModel):
     id: int = Field(..., description="工具一级ID")
-    name: str = Field(..., description="工具一级名称")
-    description: str = Field(..., description="工具一级描述")
-    is_preset: ToolPresetType = Field(..., description="工具类型")
+    name: Optional[str] = Field(None, description="工具名称")
+    is_preset: int = Field(1, description="是否为预设工具")
+    desc: Optional[str] = Field(None, description="工具描述")
     # child工具列表
-    children: List[ToolChildrenSchema] = Field(..., description="子工具列表")
-
-    @field_validator("is_preset")
-    @classmethod
-    def validate_is_preset(cls, v: ToolPresetType) -> int:
-        return v.value
+    children: Optional[List[ToolChildrenSchema]] = Field(..., description="子工具列表")
 
 
 class SubmitFileSchema(BaseModel):
@@ -37,8 +34,8 @@ class LinsightQuestionSubmitSchema(BaseModel):
     question: str = Field(..., description="用户提交的问题")
     org_knowledge_enabled: bool = Field(False, description="是否启用组织知识库")
     personal_knowledge_enabled: bool = Field(False, description="是否启用个人知识库")
-    files: List[SubmitFileSchema] = Field(None, description="上传的文件列表")
-    tools: List[LinsightToolSchema] = Field(None, description="可用的工具列表")
+    files: Optional[List[SubmitFileSchema]] = Field(None, description="上传的文件列表")
+    tools: Optional[List[LinsightToolSchema]] = Field(None, description="可用的工具列表")
 
     @field_validator("tools")
     @classmethod
@@ -47,3 +44,18 @@ class LinsightQuestionSubmitSchema(BaseModel):
             return []
         # 将工具转换为字典格式
         return [tool.model_dump() for tool in v]
+
+
+class DownloadFilesSchema(BaseModel):
+    file_name: str = Field(..., description="文件名称")
+    file_url: str = Field(..., description="文件下载链接")
+
+
+class SopRecordRead(LinsightSOPRecord, table=False):
+    user_name: Optional[str] = Field(default=None, description="用户名称")
+
+
+class UserInputEventSchema(NeedUserInput):
+    files: Optional[List[Dict[str, str]]] = Field(None, description="上传的文件列表")
+    user_input: Optional[str] = Field(None, description="用户输入")
+    is_completed: bool = Field(False, description="是否已完成")

@@ -14,6 +14,7 @@ import EmailConfigForm from "./builtInTool/EmailConfig";
 import CrawlerConfigForm from "./builtInTool/CrawlerConfig";
 import WebSearchForm from "./builtInTool/WebSearchFrom";
 import { useWebSearchStore } from './webSearchStore'
+import CodeExecutor from "./builtInTool/CodeExecutor";
 const ToolSet = forwardRef(function ToolSet({ onChange }, ref) {
     const [open, setOpen] = useState(false);
     const { t } = useTranslation();
@@ -33,29 +34,36 @@ const ToolSet = forwardRef(function ToolSet({ onChange }, ref) {
     // });
     const idRef = useRef('');
     const [name, setName] = useState('');
- const { config: webSearchData, setConfig } = useWebSearchStore()
+    const { config: webSearchData, setConfig } = useWebSearchStore()
 
     useImperativeHandle(ref, () => ({
+
         edit: (item) => {
+            
             setName(item.name);
             idRef.current = item.id;
-            const config = item.children[0]?.extra 
-                ? JSON.parse(item.children[0].extra)
-                : webSearchData || {};
-                
+             let config = {};
+            try {
+                if (item.extra) {
+                    config = JSON.parse(item.extra);
+                    console.log('Parsed extra config:', config);
+                }
+            } catch (e) {
+                console.error('接口返回失败');
+            }
             setFormData(config);
-            setOpen(true); 
+            setOpen(true);
         }
     }));
 
 
 
-  const handleSubmit = async (formdata) => {
-    await updateAssistantToolApi(idRef.current, formdata)
-    setConfig(formdata)
-    setOpen(false)
-    onChange()
-  }
+    const handleSubmit = async (formdata) => {
+        await updateAssistantToolApi(idRef.current, formdata)
+        setConfig(formdata)
+        setOpen(false)
+        onChange()
+    }
 
     // const getFieldsToSubmit = () => {
     //     const fields = {};
@@ -104,6 +112,8 @@ const ToolSet = forwardRef(function ToolSet({ onChange }, ref) {
                 return <TianyanchaToolForm formData={formData} onSubmit={handleSubmit} />;
             case '联网搜索':
                 return <WebSearchForm formData={formData} onSubmit={handleSubmit} />;
+            case '代码执行器':
+                return <CodeExecutor formData={formData} onSubmit={handleSubmit} />;
             default:
                 return null;
         }

@@ -1,10 +1,11 @@
 import axios from 'axios';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { NotificationSeverity } from '~/common';
 import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '~/components';
-import { useGetDownloadUrl, useGetKnowledgeFiles } from '~/data-provider';
+import { useGetDownloadUrl, useGetKnowledgeFiles, useModelBuilding } from '~/data-provider';
 import type { TFile } from '~/data-provider/data-provider/src';
 import { dataService } from '~/data-provider/data-provider/src';
-import { useLocalize } from '~/hooks';
+import { useLocalize, useToast } from '~/hooks';
 import { DataTableKnowledge, getKnowledgeColumns } from './Table';
 
 export default function MyKnowledgeView({ open, onOpenChange }) {
@@ -30,9 +31,11 @@ export default function MyKnowledgeView({ open, onOpenChange }) {
   });
 
   const handleDownload = async (object_name: string, filename: string) => {
+    if (building) return backToast()
+
     const res = await useGetDownloadUrl(object_name)
 
-    return axios.get(res.data, { responseType: "blob" }).then((res: any) => {
+    return axios.get(__APP_ENV__.BASE_URL + res.data, { responseType: "blob" }).then((res: any) => {
       const blob = new Blob([res.data]);
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
@@ -54,6 +57,8 @@ export default function MyKnowledgeView({ open, onOpenChange }) {
   };
 
   const handleDelete = async (id) => {
+    if (building) return backToast()
+
     try {
       const res = await dataService.deleteKnowledge(id);
       console.info(res);
@@ -63,16 +68,27 @@ export default function MyKnowledgeView({ open, onOpenChange }) {
     }
   };
 
+  const { showToast } = useToast()
+  const backToast = () => {
+    showToast({
+      message: localize('com_tools_knowledge_rebuilding'),
+      severity: NotificationSeverity.WARNING,
+    })
+  }
+
+  const [building] = useModelBuilding()
+
   return (
     <OGDialog open={open} onOpenChange={onOpenChange}>
       <OGDialogContent
-        title={localize('com_nav_my_knowledge_files')}
+        // title={localize('com_nav_my_knowledge_files')}
         className="w-11/12 bg-background text-text-primary shadow-2xl"
       >
         <OGDialogHeader>
           <OGDialogTitle>{localize('com_nav_my_knowledge_files')}</OGDialogTitle>
         </OGDialogHeader>
         <DataTableKnowledge columns={getKnowledgeColumns(handleDelete, handleDownload)}
+          building={building}
           data={data}
           page={page}
           onPage={setPage}

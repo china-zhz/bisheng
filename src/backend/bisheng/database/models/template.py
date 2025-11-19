@@ -1,17 +1,18 @@
 from datetime import datetime
 from typing import Dict, Optional
 
+from pydantic import model_validator
 from sqlalchemy import JSON, Column, DateTime, text, String
 from sqlmodel import Field
 
-from bisheng.database.models.base import SQLModelSerializable
+from bisheng.common.models.base import SQLModelSerializable
 
 
 class TemplateSkillBase(SQLModelSerializable):
     name: str = Field(index=True)
     description: str = Field(index=False)
     data: Optional[Dict] = Field(default=None, sa_column=Column(JSON))
-    order_num: Optional[int] = Field(default=True)
+    order_num: Optional[int] = Field(default=True, index=True)
     # 1 flow 5 assistant 10 workflow
     flow_type: Optional[int] = Field(default=1)
     flow_id: Optional[str] = Field(default=None, index=False)
@@ -43,3 +44,10 @@ class TemplateUpdate(SQLModelSerializable):
     data: Optional[Dict] = None
     order_num: Optional[int] = None
     guide_word: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def convert_field(cls, values: dict) -> dict:
+        if values.get("order_num", None):
+            values['order_num'] = int(float(values['order_num']))
+        return values

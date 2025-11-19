@@ -6,8 +6,9 @@ from typing import List, Dict, Optional
 from sqlalchemy import Column, Text, JSON, Boolean, Enum as SQLEnum, DateTime, text, ForeignKey, CHAR, func
 from sqlmodel import Field, select, col, update
 
-from bisheng.database.base import async_session_getter, uuid_hex
-from bisheng.database.models.base import SQLModelSerializable
+from bisheng.core.database import get_async_db_session
+from bisheng.database.base import uuid_hex
+from bisheng.common.models.base import SQLModelSerializable
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,10 @@ class SessionVersionStatusEnum(str, Enum):
     IN_PROGRESS = "in_progress"
     # 运行完成
     COMPLETED = "completed"
+    # 运行失败
+    FAILED = "failed"
+    # SOP 生成失败
+    SOP_GENERATION_FAILED = "sop_generation_failed"
     # 终止
     TERMINATED = "terminated"
 
@@ -86,7 +91,7 @@ class LinsightSessionVersionDao(object):
         :return: 创建的灵思会话版本对象
         """
 
-        async with async_session_getter() as session:
+        async with get_async_db_session() as session:
             session.add(session_version)
             await session.commit()
             await session.refresh(session_version)
@@ -99,7 +104,7 @@ class LinsightSessionVersionDao(object):
         :param linsight_session_version_id: 灵思会话版本ID
         :return: 灵思会话版本对象
         """
-        async with async_session_getter() as session:
+        async with get_async_db_session() as session:
             statement = select(LinsightSessionVersion).where(
                 LinsightSessionVersion.id == str(linsight_session_version_id))  # 显式转 str
             result = await session.exec(statement)
@@ -112,7 +117,7 @@ class LinsightSessionVersionDao(object):
         :param session_id: 会话ID
         :return: 灵思会话版本列表
         """
-        async with async_session_getter() as session:
+        async with get_async_db_session() as session:
             statement = select(LinsightSessionVersion).where(
                 LinsightSessionVersion.session_id == str(session_id)).order_by(
                 col(LinsightSessionVersion.version).desc())
@@ -128,7 +133,7 @@ class LinsightSessionVersionDao(object):
         :return:
         """
 
-        async with async_session_getter() as session:
+        async with get_async_db_session() as session:
             stmt = (
                 update(LinsightSessionVersion)
                 .where(col(LinsightSessionVersion.id) == str(linsight_session_version_id))  # 显式转 str
@@ -148,9 +153,42 @@ class LinsightSessionVersionDao(object):
         :param file_id: 文件ID
         :return: 灵思会话版本对象
         """
-        async with async_session_getter() as session:
+        async with get_async_db_session() as session:
             statement = select(LinsightSessionVersion).where(
                 func.json_search(LinsightSessionVersion.files, 'all', file_id)
             )
             result = await session.exec(statement)
             return result.first()
+
+    # 根据任务状态获取灵思会话版本列表
+    @staticmethod
+    async def get_session_versions_by_status(status: SessionVersionStatusEnum) -> List[LinsightSessionVersion]:
+        """
+        根据任务状态获取灵思会话版本列表
+        :param status: 会话版本状态
+        :return: 灵思会话版本列表
+        """
+        async with get_async_db_session() as session:
+            statement = select(LinsightSessionVersion).where(
+                LinsightSessionVersion.status == status
+            )
+            result = await session.exec(statement)
+            return result.all()
+
+    # 批量更新灵思会话版本状态
+    @staticmethod
+    async def batch_update_session_versions_status(session_version_ids: List[str], status: SessionVersionStatusEnum,
+                                                   **kwargs) -> None:
+        """
+        批量更新灵思会话版本状态
+        :param session_version_ids: 会话版本ID列表
+        :param status: 新的会话版本状态
+        """
+        async with get_async_db_session() as session:
+            stmt = (
+                update(LinsightSessionVersion)
+                .where(col(LinsightSessionVersion.id).in_(session_version_ids))
+                .values(status=status, **kwargs)  # 支持额外的字段更新
+            )
+            await session.exec(stmt)
+            await session.commit()

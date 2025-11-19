@@ -1,18 +1,21 @@
-import json
 import io
-from typing import List, Optional
+import json
+from typing import Optional
 
-from bisheng.api.v1.schemas import UnifiedResponseModel, resp_200, resp_500
-from bisheng.database.base import session_getter
+from datasets import Dataset
+from fastapi import APIRouter, Depends, Query, UploadFile, Form, BackgroundTasks
+from loguru import logger
+
 from bisheng.api.services.evaluation import EvaluationService, add_evaluation_task
 from bisheng.api.services.user_service import UserPayload, get_login_user
+from bisheng.api.v1.schemas import resp_200, resp_500
+from bisheng.core.cache.utils import convert_encoding_cchardet
+from bisheng.core.database import get_sync_db_session
+from bisheng.core.storage.minio.minio_manager import get_minio_storage
+from bisheng.database.models.evaluation import EvaluationCreate, Evaluation
 from fastapi_jwt_auth import AuthJWT
-from fastapi import APIRouter, Depends, Query, UploadFile, Form, BackgroundTasks
-from bisheng.database.models.evaluation import EvaluationRead, EvaluationCreate, Evaluation
-from bisheng.utils.minio_client import MinioClient
-from bisheng.cache.utils import convert_encoding_cchardet
 
-router = APIRouter(prefix='/evaluation', tags=['Skills'], dependencies=[Depends(get_login_user)])
+router = APIRouter(prefix='/evaluation', tags=['Evaluation'], dependencies=[Depends(get_login_user)])
 
 
 @router.get('')
@@ -45,10 +48,18 @@ def create_evaluation(*,
 
     try:
         # 尝试做下转码操作
-        output_file = io.BytesIO()
-        file.file = convert_encoding_cchardet(file.file, output_file)
-        EvaluationService.parse_csv(file_data=io.BytesIO(file.file.read()))
+        output_file = convert_encoding_cchardet(file_io=io.BytesIO(file.file.read()))
+        csv_data = EvaluationService.parse_csv(file_data=output_file)
+        data_samples = {
+            "question": [one.get('question') for one in csv_data],
+            "answer": [one.get('answer') for one in csv_data],
+            "ground_truths": [[one.get('ground_truth')] for one in csv_data]
+        }
+        dataset = Dataset.from_dict(data_samples)
     except ValueError:
+        return resp_500(code=400, message='文件格式不符合要求，请参考模板文件')
+    except Exception:
+        logger.exception('evaluation file parse error')
         return resp_500(code=400, message='文件格式不符合要求，请参考模板文件')
     finally:
         file.file.seek(0)
@@ -61,7 +72,7 @@ def create_evaluation(*,
                                                                user_id=user_id,
                                                                file_name=file_name,
                                                                file_path=file_path))
-    with session_getter() as session:
+    with get_sync_db_session() as session:
         session.add(db_evaluation)
         session.commit()
         session.refresh(db_evaluation)
@@ -86,7 +97,7 @@ async def get_download_url(*,
                            Authorize: AuthJWT = Depends()):
     """ 获取文件下载地址. """
     Authorize.jwt_required()
-    minio_client = MinioClient()
+    minio_client = await get_minio_storage()
     download_url = minio_client.get_share_link(file_url)
     return resp_200(data={
         'url': download_url

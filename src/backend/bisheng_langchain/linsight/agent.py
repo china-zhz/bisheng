@@ -9,7 +9,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel, Field
 
-from bisheng_langchain.linsight.const import TaskMode
+from bisheng_langchain.linsight.const import TaskMode, ExecConfig
 from bisheng_langchain.linsight.event import BaseEvent
 from bisheng_langchain.linsight.manage import TaskManage
 from bisheng_langchain.linsight.prompt import SopPrompt, FeedBackSopPrompt, GenerateTaskPrompt
@@ -30,35 +30,86 @@ class LinsightAgent(BaseModel):
                                                description='Task manager for handling tasks and workflows')
     task_mode: str = Field(default=TaskMode.FUNCTION.value,
                            description="Mode of the task execute")
-    debug: Optional[bool] = Field(default=False, description='是否是调试模式。开启后会记录llm的输入和输出')
-    debug_id: Optional[str] = Field(default=None, description='调试记录唯一ID, 用来写唯一的文件')
+    exec_config: ExecConfig = Field(default_factory=ExecConfig, description='执行过程中所需的配置')
 
-    async def generate_sop(self, sop: str) -> AsyncIterator[ChatGenerationChunk]:
-        """
-        Generate a Standard Operating Procedure (SOP) based on the provided SOP string.
-        :param sop: The SOP string to be processed.
-        :return: Processed SOP string.
-        """
-        tools_str = json.dumps([convert_to_openai_tool(one) for one in self.tools], ensure_ascii=False, indent=2)
-        sop_prompt = SopPrompt.format(query=self.query, sop=sop, tools_str=tools_str)
+    async def parse_file_list_str(self, file_list: list[str]) -> str:
+        file_list_str = ""
+        if file_list:
+            file_list_str = "\n".join(file_list[:self.exec_config.max_file_num])
+            if len(file_list) > self.exec_config.max_file_num:
+                file_list_str += f"\n用户上传了{len(file_list)}份文件，此处只展示{self.exec_config.max_file_num}份。都储存在./目录下。"
+            file_list_str = f"<用户上传文件列表>\n{file_list_str}\n</用户上传文件列表>"
+        return file_list_str
+
+    @staticmethod
+    async def parse_knowledge_list_str(knowledge_list: list[str]) -> str:
+        knowledge_list_str = ""
+        if knowledge_list:
+            knowledge_list_str = "\n".join(knowledge_list)
+            knowledge_list_str = f"<知识库列表>\n{knowledge_list_str}\n</知识库列表>"
+        return knowledge_list_str
+
+    async def _parse_sop_content(self, sop_prompt: str) -> AsyncIterator[ChatGenerationChunk]:
         # Add logic to process the SOP string
         start_time = time.time()
         one = None
-        answer = ''
+        sop_flag = False
+        sop_content = ""
+        answer = ""
+        split_tags = ["<Thought_END>", "</Thought_END>"]
         async for one in self.llm.astream(sop_prompt):
-            yield one
             answer += f"{one.content}"
-        if self.debug and one:
-            record_llm_prompt(self.llm, sop_prompt, answer, one.response_metadata.get('token_usage', None),
-                              time.time() - start_time, self.debug_id)
+            if sop_flag:
+                yield one
+                sop_content += one.content
+                continue
+            for split_tag in split_tags:
+                if answer.find(split_tag) != -1:
+                    sop_flag = True
+                    sop_content = answer.split(split_tag)[-1].strip()
+                    if sop_content:
+                        one.content = sop_content
+                        yield one
+                    break
+        if not sop_content:
+            one.content = answer
+            yield one
 
-    async def feedback_sop(self, sop: str, feedback: str, history_summary: list[str] = None) -> AsyncIterator[
-        ChatGenerationChunk]:
+        if self.exec_config.debug and one:
+            record_llm_prompt(self.llm, sop_prompt, answer, one,
+                              time.time() - start_time, self.exec_config.debug_id)
+
+    async def generate_sop(self, sop: str, file_list: list[str] = None, knowledge_list: list[str] = None) \
+            -> AsyncIterator[ChatGenerationChunk]:
+        """
+        Generate a Standard Operating Procedure (SOP) based on the provided SOP string.
+        :param sop: The SOP string to be processed.
+        :param file_list: Optional list of files uploaded by the user.
+        :param knowledge_list: Optional list of knowledge bases to be considered.
+
+        :return: Processed SOP string.
+        """
+        tools_str = json.dumps([convert_to_openai_tool(one) for one in self.tools], ensure_ascii=False, indent=2)
+
+        file_list_str = await self.parse_file_list_str(file_list)
+        knowledge_list_str = await self.parse_knowledge_list_str(knowledge_list)
+
+        sop_prompt = SopPrompt.format(query=self.query, sop=sop, tools_str=tools_str, file_list_str=file_list_str,
+                                      knowledge_list_str=knowledge_list_str)
+        # Add logic to process the SOP string
+        async for one in self._parse_sop_content(sop_prompt):
+            yield one
+
+    async def feedback_sop(self, sop: str, feedback: str, history_summary: list[str] = None,
+                           file_list: list[str] = None, knowledge_list: list[str] = None) \
+            -> AsyncIterator[ChatGenerationChunk]:
         """
         Provide feedback on the generated SOP.
         :param sop: The SOP string to be reviewed.
         :param feedback: Feedback string for the SOP.
         :param history_summary: Optional summary of previous interactions.
+        :param file_list: Optional list of files uploaded by the user.
+        :param knowledge_list: Optional list of knowledge bases to be considered.
 
         :return: Processed SOP with feedback applied.
         """
@@ -68,29 +119,27 @@ class LinsightAgent(BaseModel):
         else:
             history_summary = ""
         tools_str = json.dumps([convert_to_openai_tool(one) for one in self.tools], ensure_ascii=False, indent=2)
-        if sop:
-            sop = f"已有SOP：{sop}"
+
+        file_list_str = await self.parse_file_list_str(file_list)
+        knowledge_list_str = await self.parse_knowledge_list_str(knowledge_list)
 
         sop_prompt = FeedBackSopPrompt.format(query=self.query, sop=sop, feedback=feedback, tools_str=tools_str,
-                                              history_summary=history_summary)
-        start_time = time.time()
-        one = None
-        answer = ''
-        async for one in self.llm.astream(sop_prompt):
-            answer += f"{one.content}"
+                                              history_summary=history_summary, file_list_str=file_list_str,
+                                              knowledge_list_str=knowledge_list_str)
+        async for one in self._parse_sop_content(sop_prompt):
             yield one
-        if self.debug and one:
-            record_llm_prompt(self.llm, sop_prompt, answer, one.response_metadata.get('token_usage', None),
-                              time.time() - start_time, self.debug_id)
 
     async def generate_task(self, sop: str) -> list[dict]:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        prompt = GenerateTaskPrompt.format(query=self.query, sop=sop, file_dir=self.file_dir, current_time=current_time)
+        tools_str = json.dumps([convert_to_openai_tool(one) for one in self.tools], ensure_ascii=False, indent=2)
+
+        prompt = GenerateTaskPrompt.format(query=self.query, sop=sop, file_dir=self.file_dir,
+                                           current_time=current_time, tools_str=tools_str)
         start_time = time.time()
         res = await self.llm.ainvoke(prompt)
-        if self.debug and res:
-            record_llm_prompt(self.llm, prompt, res.content, res.response_metadata.get('token_usage', None),
-                              time.time() - start_time, self.debug_id)
+        if self.exec_config.debug and res:
+            record_llm_prompt(self.llm, prompt, res.content, res,
+                              time.time() - start_time, self.exec_config.debug_id)
 
         # 解析生成的任务json数据
         task = extract_json_from_markdown(res.content)
@@ -98,17 +147,20 @@ class LinsightAgent(BaseModel):
 
         return TaskManage.completion_task_tree_info(tasks)
 
-    async def ainvoke(self, tasks: list[dict], sop: str) -> AsyncIterator[BaseEvent]:
+    async def ainvoke(self, tasks: list[dict], sop: str, file_list: list[str] = None) -> AsyncIterator[BaseEvent]:
         """
         Run the agent's main functionality.
         :param tasks: List of tasks to be processed by the agent.
         :param sop: Final SOP to be used in the agent's processing.
+        :param file_list: Optional list of files uploaded by the user.
         """
+        file_list_str = await self.parse_file_list_str(file_list)
         # Add main functionality logic here
         if not self.task_manager:
             self.task_manager = TaskManage(tasks=tasks, tools=self.tools, task_mode=self.task_mode)
             self.task_manager.rebuild_tasks(query=self.query, llm=self.llm, file_dir=self.file_dir, sop=sop,
-                                            debug=self.debug, debug_id=self.debug_id)
+                                            exec_config=self.exec_config, file_list=file_list,
+                                            file_list_str=file_list_str)
 
         async for one in self.task_manager.ainvoke_task():
             yield one

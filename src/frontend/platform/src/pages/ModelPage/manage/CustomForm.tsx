@@ -116,20 +116,20 @@ const modelProviders = {
     ],
     qianfan: [
         {
+            label: "Base URL",
+            type: "",
+            placeholder: "",
+            default: "https://qianfan.baidubce.com/v2",
+            required: true,
+            key: "base_url",
+        },
+        {
             label: "API Key",
             type: "password",
             placeholder: "",
             default: "",
             required: true,
-            key: "wenxin_api_key",
-        },
-        {
-            label: "Secret Key",
-            type: "password",
-            placeholder: "",
-            default: "",
-            required: true,
-            key: "wenxin_secret_key",
+            key: "api_key",
         },
     ],
     zhipu: [
@@ -166,6 +166,16 @@ const modelProviders = {
             default: "",
             required: true,
             key: "openai_api_key",
+        },
+    ],
+    MindIE: [
+        {
+            label: "Base URL",
+            type: "text",
+            placeholder: "格式示例：http://ip:port/v1",
+            default: "",
+            required: true,
+            key: "base_url",
         },
     ],
     spark: [
@@ -330,14 +340,17 @@ const modelProviders = {
 };
 
 
-const FormField = ({ showDefault, field, value, onChange }) => {
+const FormField = ({ showDefault, field, value, providerName, apiKeySite, onChange }) => {
     useEffect(() => {
         showDefault && field.default && onChange(field.key, field.default)
     }, [showDefault])
 
     return (
         <div className="mb-2">
-            <Label className="bisheng-label">{field.label}</Label>
+            <Label className="bisheng-label">
+                {field.label}
+                {apiKeySite && field.label.indexOf('API Key') !== -1 && <a href={apiKeySite} target="_blank" rel="noreferrer" className="ml-1 text-primary">(获取{providerName} API Key)</a>}
+            </Label>
             <Input
                 type={field.type}
                 placeholder={field.placeholder}
@@ -350,7 +363,7 @@ const FormField = ({ showDefault, field, value, onChange }) => {
 };
 
 
-const CustomForm = forwardRef(({ showDefault, provider, formData }, ref) => {
+const CustomForm = forwardRef(({ showDefault, provider, formData, providerName, apiKeySite, apiKeyUrl }, ref) => {
     const [form, setForm] = useState(formData);
     const fields = modelProviders[provider] || [];
 
@@ -380,6 +393,8 @@ const CustomForm = forwardRef(({ showDefault, provider, formData }, ref) => {
                     showDefault={showDefault}
                     field={field}
                     value={form[field.key] || ''}
+                    providerName={providerName}
+                    apiKeySite={apiKeySite}
                     onChange={handleChange}
                 />
             ))}

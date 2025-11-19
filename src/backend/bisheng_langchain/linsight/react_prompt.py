@@ -1,8 +1,8 @@
 # 一级任务的prompt模板
 # variables -> profile: task角色; current_time: 当前时间；file_dir: 用户上传的文件路径；
 # tools_json: 可用的工具列表；sop: 用户SOP；query: 用户最终问题；
-# workflow: 任务整体规划；processed_steps: 已经处理的步骤；input_str: 用户输入信息；step_id: 当前任务id
-# target: 当前任务目标；single_sop: 当前任务遵循的SOP; history: 已经执行的步骤
+# step_list: 任务整体规划；processed_steps: 已经处理的步骤；input_str: 用户输入信息；step_id: 当前任务id
+# target: prompt；single_sop: 当前任务遵循的SOP; history: 已经执行的步骤; file_list_str: 用户上传的文件列表
 ReactSingleAgentPrompt = """你是一个强大的{profile}，可以使用以下工具来回答用户问题并执行任务。
 请使用ReAct (Reasoning + Acting)方法，思考并使用工具解决问题。
 每一步都要清晰地思考你需要做什么，然后采取行动。
@@ -11,6 +11,8 @@ ReactSingleAgentPrompt = """你是一个强大的{profile}，可以使用以下�
 以下是一些标准信息：
 当前时间：{current_time}
 当前路径：{file_dir}
+
+{file_list_str}
 
 可用工具列表:
 {tools_json}
@@ -34,8 +36,8 @@ ReactSingleAgentPrompt = """你是一个强大的{profile}，可以使用以下�
 固定步骤结构体：
 ```json
 {{
-    "结束": "<完成了阶段目标则结束，如果结束，为True，否则为False>",
     "思考": "<你的推理过程，分析应该使用哪个工具和如何解决问题>",
+    "结束": "<完成了阶段目标则结束，如果结束，为True，否则为False>",
     "类型": "固定步骤",
     "行动": "<步骤名>",
     "参数": {{}} ,
@@ -49,8 +51,8 @@ ReactSingleAgentPrompt = """你是一个强大的{profile}，可以使用以下�
 工具结构体：
 ```json
 {{
-    "结束": "<完成了阶段目标则结束，如果结束，为True，否则为False>",
     "思考": "<你的推理过程，分析应该使用哪个工具和如何解决问题>",
+    "结束": "<完成了阶段目标则结束，如果结束，为True，否则为False>",
     "类型": "工具",
     "行动": "<工具名称>",
     "参数": "<工具参数的JSON格式>"
@@ -62,32 +64,34 @@ ReactSingleAgentPrompt = """你是一个强大的{profile}，可以使用以下�
 用户最终问题: 
 "{query}"
 
-用户提供的完整SOP: 
+用户提供的完整指导手册(SOP): 
 {sop}
 
 这是任务整体规划：
-{workflow}
+{step_list}
 
 {processed_steps}
 
 {input_str}
 
-当前任务为：{step_id}，步骤目标为：
+当前任务为：{step_id}，目标为：
 {target}
-当你完成了阶段目标，应该结束执行。
+当你完成了当前目标，应该结束执行。
 
-当前应该遵守的SOP：
+当前应该遵守的指导手册(SOP)：
 {single_sop}
 
 已经执行的步骤：
 {history}
 
-只生成下一步的操作，如果下一步是最后一步，回答需要明确当前任务的产出内容是什么："""
+只生成下一步的操作，如果下一步是最后一步，回答需要明确当前任务的产出内容是什么：
+你应该先一步一步思考，思考放在<Thought>和</Thought>之间，再输出json。
+"""
 
 # 二级子任务的prompt模板
 # variables -> profile: agent的角色；current_time: 当前时间；file_dir: 用户上传的文件路径；tools_json: 可用的工具列表；
 # original_query: 总体任务目标；original_method: 总体方法；original_done: 已经完成的内容；last_answer: 上步骤的答案
-# single_sop: 当前任务遵循的SOP；step_id: 当前任务id; target: 当前任务目标；history: 历史记录
+# single_sop: 当前任务遵循的SOP；step_id: 当前任务id; target: 当前任务目标；history: 历史记录; file_list_str: 文件列表字符串
 ReactLoopAgentPrompt = """你是一个强大的{profile}，可以使用以下工具来回答用户问题并执行任务。
 请使用ReAct (Reasoning + Acting)方法，思考并使用工具解决问题。
 每一步都要清晰地思考你需要做什么，然后采取行动。
@@ -96,6 +100,8 @@ ReactLoopAgentPrompt = """你是一个强大的{profile}，可以使用以下工
 以下是一些标准信息：
 当前时间：{current_time}
 当前路径：{file_dir}
+
+{file_list_str}
 
 可用工具:
 {tools_json}
@@ -119,8 +125,8 @@ ReactLoopAgentPrompt = """你是一个强大的{profile}，可以使用以下工
 固定步骤结构体：
 ```json
 {{
-    "结束": "<完成了阶段目标则结束，如果结束，为True，否则为False>",
     "思考": "<你的推理过程，分析应该使用哪个工具和如何解决问题>",
+    "结束": "<完成了阶段目标则结束，如果结束，为True，否则为False>",
     "类型": "固定步骤",
     "行动": "<步骤名>",
     "参数": {{}} ,
@@ -134,8 +140,8 @@ ReactLoopAgentPrompt = """你是一个强大的{profile}，可以使用以下工
 工具结构体：
 ```json
 {{
-    "结束": "<完成了阶段目标则结束，如果结束，为True，否则为False>",
     "思考": "<你的推理过程，分析应该使用哪个工具和如何解决问题>",
+    "结束": "<完成了阶段目标则结束，如果结束，为True，否则为False>",
     "类型": "工具",
     "行动": "<工具名称>",
     "参数": "<工具参数的JSON格式>"
@@ -157,11 +163,13 @@ ReactLoopAgentPrompt = """你是一个强大的{profile}，可以使用以下工
 当前方法：
 {single_sop}
 
-当前任务为：{step_id}，阶段目标为：
+当前任务为：{step_id}，目标为：
 {target}
-当你完成了阶段目标，应该结束执行。
+当你完成了当前目标，应该结束执行。
 
 已经执行的步骤：
 {history}
 
-只生成下一步的操作，如果下一步是最后一步，回答需要明确当前任务的产出内容是什么："""
+只生成下一步的操作，如果下一步是最后一步，回答需要明确当前任务的产出内容是什么：
+你应该先一步一步思考，思考放在<Thought>和</Thought>之间，再输出json。
+"""

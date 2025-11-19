@@ -12,17 +12,16 @@ import {
     SystemIcon,
     TechnologyIcon
 } from "@/components/bs-icons";
+import { LoadingIcon } from "@/components/bs-icons/loading";
 import { DatasetIcon } from "@/components/bs-icons/menu/dataset";
 import { bsConfirm } from "@/components/bs-ui/alertDialog/useConfirm";
 import { SelectHover, SelectHoverItem } from "@/components/bs-ui/select/hover";
 import { locationContext } from "@/contexts/locationContext";
 import i18next from "i18next";
 import { ChevronDown, Globe, Lock, MoonStar, Sun } from "lucide-react";
-import { useContext, useEffect, useMemo, useState } from "react";
-import { ErrorBoundary } from "react-error-boundary";
+import { Suspense, useContext, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
-import CrashErrorComponent from "../components/CrashErrorComponent";
 import { Separator } from "../components/bs-ui/separator";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/bs-ui/tooltip";
 import { darkContext } from "../contexts/darkContext";
@@ -76,7 +75,7 @@ export default function MainLayout() {
                 <div className="flex h-9 my-[14px]">
                     <Link className="inline-block" to='/'>
                         {/* @ts-ignore */}
-                        <img src={__APP_ENV__.BASE_URL + '/login-logo-small.png'} className="w-[104px] ml-[38px] rounded dark:w-[104px]" alt="" />
+                        <img src={__APP_ENV__.BASE_URL + '/assets/bisheng/login-logo-small.png'} className="w-[104px] ml-[38px] rounded dark:w-[104px]" alt="" />
                     </Link>
                 </div>
                 <div>
@@ -115,7 +114,7 @@ export default function MainLayout() {
                     </div>
                     <div className="flex items-center h-7 my-4">
                         {/* @ts-ignore */}
-                        <img className="h-7 w-7 rounded-2xl mr-4" src={__APP_ENV__.BASE_URL + '/user.png'} alt="" />
+                        <img className="h-7 w-7 rounded-2xl mr-4" src={__APP_ENV__.BASE_URL + '/assets/user.png'} alt="" />
                         <SelectHover
                             triagger={
                                 <span className="leading-8 text-[14px] mr-8 max-w-40 cursor-pointer text-ellipsis overflow-hidden whitespace-nowrap">
@@ -131,12 +130,21 @@ export default function MainLayout() {
             <div className="flex" style={{ height: "calc(100vh - 64px)" }}>
                 <div className="relative z-10 bg-background-main h-full w-[184px] min-w-[184px] px-3  shadow-x1 flex justify-between text-center ">
                     <nav className="">
-                        {appConfig.benchMenu && <NavLink to='/workspace/' target="_blank" className={`navlink inline-flex rounded-lg w-full px-6 hover:bg-nav-hover h-12 mb-[3.5px]`}>
-                            <ApplicationIcon className="h-6 w-6 my-[12px]" /><span className="mx-[14px] max-w-[48px] text-[14px] leading-[48px]">工作台</span>
-                        </NavLink>}
-                        <NavLink to='/' className={`navlink inline-flex rounded-lg w-full px-6 hover:bg-nav-hover h-12 mb-[3.5px]`}>
+                        {appConfig.benchMenu && (
+                            <a
+                                href="/workspace/"  // 直接使用根路径
+                                target="_blank"
+                                className={`navlink inline-flex rounded-lg w-full px-6 hover:bg-nav-hover h-12 mb-[3.5px]`}
+                            >
+                                <ApplicationIcon className="h-6 w-6 my-[12px]" />
+                                <span className="mx-[14px] max-w-[48px] text-[14px] leading-[48px]">
+                                    {t('menu.workspace')}
+                                </span>
+                            </a>
+                        )}
+                        {/* <NavLink to='/' className={`navlink inline-flex rounded-lg w-full px-6 hover:bg-nav-hover h-12 mb-[3.5px]`}>
                             <ApplicationIcon className="h-6 w-6 my-[12px]" /><span className="mx-[14px] max-w-[48px] text-[14px] leading-[48px]">{t('menu.app')}</span>
-                        </NavLink>
+                        </NavLink> */}
                         {
                             isMenu('build') &&
                             <NavLink to='/build' className={`navlink inline-flex rounded-lg w-full px-6 hover:bg-nav-hover h-12 mb-[3.5px]`} >
@@ -217,12 +225,9 @@ export default function MainLayout() {
                     </div>}
                 </div>
                 <div className="flex-1 bg-background-main-content rounded-lg w-[calc(100vw-184px)]">
-                    <ErrorBoundary
-                        onReset={() => window.location.href = window.location.href}
-                        FallbackComponent={CrashErrorComponent}
-                    >
+                    <Suspense fallback={<div className="flex items-center justify-center h-full"><LoadingIcon /></div>}>
                         <Outlet />
-                    </ErrorBoundary>
+                    </Suspense>
                 </div>
             </div>
         </div>

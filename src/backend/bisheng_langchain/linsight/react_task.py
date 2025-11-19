@@ -1,10 +1,12 @@
 import asyncio
+import copy
 import json
+import logging
 from datetime import datetime
 
 from langchain_core.messages import ToolMessage, AIMessage, HumanMessage, BaseMessage
 
-from bisheng_langchain.linsight.const import TaskStatus, RetryNum, CallUserInputToolName
+from bisheng_langchain.linsight.const import TaskStatus, CallUserInputToolName
 from bisheng_langchain.linsight.event import NeedUserInput, ExecStep
 from bisheng_langchain.linsight.react_prompt import ReactSingleAgentPrompt, ReactLoopAgentPrompt
 from bisheng_langchain.linsight.task import BaseTask
@@ -26,10 +28,15 @@ class ReactTask(BaseTask):
             else:
                 remain_messages.append(one)
 
-        all_tool_messages_str = json.dumps([one.model_dump() for one in tool_messages], ensure_ascii=False,
+        all_tool_messages_str = json.dumps([json.loads(one.content) for one in tool_messages], ensure_ascii=False,
                                            indent=2)
-        if len(encode_str_tokens(all_tool_messages_str)) > self.tool_buffer:
-            messages_str = json.dumps([one.model_dump() for one in self.history], ensure_ascii=False, indent=2)
+        if len(encode_str_tokens(all_tool_messages_str)) > self.exec_config.tool_buffer:
+            messages_str = ''
+            for one in self.history:
+                messages_str += "\n" + one.content + ","
+            messages_str = messages_str.rstrip(",")
+            messages_str = f"[{messages_str}\n]"
+
             history_summary = await self.summarize_history(messages_str)
             # 将总结后的历史记录插入到system_message后面
             remain_messages.append(AIMessage(content=history_summary))
@@ -57,7 +64,8 @@ class ReactTask(BaseTask):
                                                  single_sop=self.sop,
                                                  step_id=self.step_id,
                                                  target=self.target,
-                                                 history=history_str)
+                                                 history=history_str,
+                                                 file_list_str=self.file_list_str)
         else:
             prompt = ReactSingleAgentPrompt.format(profile=self.profile,
                                                    current_time=current_time,
@@ -65,13 +73,14 @@ class ReactTask(BaseTask):
                                                    tools_json=tools_json,
                                                    sop=self.finally_sop,
                                                    query=self.query,
-                                                   workflow=self.task_manager.get_workflow(),
+                                                   step_list=self.task_manager.get_step_list(),
                                                    processed_steps=self.task_manager.get_processed_steps(),
                                                    input_str=await self.get_input_str(),
                                                    step_id=self.step_id,
                                                    target=self.target,
                                                    single_sop=self.sop,
-                                                   history=history_str)
+                                                   history=history_str,
+                                                   file_list_str=self.file_list_str)
         return [HumanMessage(content=prompt)]
 
     async def parse_react_result(self, content: str) -> (BaseMessage, bool):
@@ -98,8 +107,8 @@ class ReactTask(BaseTask):
 
         if step_type == "固定步骤":
             result_dict = {
-                "结束": "True" if is_end else "False",
                 "思考": thinking,
+                "结束": "True" if is_end else "False",
                 "类型": step_type,
                 "行动": action,
                 "参数": params,
@@ -111,15 +120,17 @@ class ReactTask(BaseTask):
                                           name=action,
                                           params=params,
                                           output=str(generate_content),
+                                          step_type='react_step',
                                           status="end"))
             message = AIMessage(content=json.dumps(result_dict, ensure_ascii=False, indent=2))
         else:
-            _call_reason = params.pop("call_reason", "")
+            _call_reason = params.get("call_reason", "")
             # 等待用户输入的特殊工具调用
             if action == CallUserInputToolName:
                 # 等待用户输入
                 self.status = TaskStatus.INPUT.value
-                await self.put_event(NeedUserInput(task_id=self.id, call_reason=_call_reason))
+                _call_reason = params.get("call_content") or params.get("call_reason")
+                await self.put_event(NeedUserInput(task_id=self.id, call_reason=_call_reason, params=params.copy()))
                 # 等待用户输入
                 while self.status != TaskStatus.INPUT_OVER.value:
                     await asyncio.sleep(0.5)
@@ -137,7 +148,7 @@ class ReactTask(BaseTask):
                                               name=action,
                                               params=params,
                                               status="start"))
-                observation, flag = await self.task_manager.ainvoke_tool(action, params)
+                observation, flag = await self.task_manager.ainvoke_tool(action, copy.deepcopy(params))
                 # 说明工具调用失败
                 if not flag:
                     is_end = False
@@ -149,15 +160,19 @@ class ReactTask(BaseTask):
                                               output=observation,
                                               status="end"))
             result_dict = {
-                "结束": "True" if is_end else "False",
                 "思考": thinking,
+                "结束": "True" if is_end else "False",
                 "类型": "工具",
                 "行动": action,
                 "参数": params,
                 "观察": observation,
             }
-            message = ToolMessage(tool_call_id=generate_uuid_str(),
-                                  content=json.dumps(result_dict, ensure_ascii=False, indent=2))
+            try:
+                message = ToolMessage(tool_call_id=generate_uuid_str(),
+                                      content=json.dumps(result_dict, ensure_ascii=False, indent=2))
+            except TypeError as e:
+                logging.error(f"json.dumps failed with result_dict: {result_dict}")
+                raise e
         return message, is_end
 
     async def _ainvoke(self) -> None:
@@ -168,13 +183,16 @@ class ReactTask(BaseTask):
         is_end = False
         # json解析失败重试三次
         json_decode_error = 0
-        for i in range(self.max_steps):
+        for i in range(self.exec_config.max_steps):
             messages = await self.build_messages_with_history()
-            res = await self._ainvoke_llm_without_tools(messages)
+            if json_decode_error > 0:
+                res = await self._ainvoke_llm_without_tools(messages, temperature=self.exec_config.retry_temperature)
+            else:
+                res = await self._ainvoke_llm_without_tools(messages)
             try:
                 message, is_end = await self.parse_react_result(res.content)
             except Exception as e:
-                if json_decode_error >= RetryNum:
+                if json_decode_error >= self.exec_config.retry_num:
                     raise e
                 json_decode_error += 1
                 continue

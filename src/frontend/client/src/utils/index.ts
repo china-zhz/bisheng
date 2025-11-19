@@ -1,28 +1,28 @@
-import { playDing } from './index';
+import axios from 'axios';
 import React from 'react';
 
-export * from './map';
-export * from './json';
-export * from './files';
-export * from './latex';
-export * from './theme';
-export * from './forms';
+export { default as buildDefaultConvo } from './buildDefaultConvo';
+export { default as buildTree } from './buildTree';
+export { default as cleanupPreset } from './cleanupPreset';
+export { default as cn } from './cn';
 export * from './convos';
+export * from './endpoints';
+export * from './files';
+export * from './forms';
+export { default as getDefaultEndpoint } from './getDefaultEndpoint';
+export { default as getLoginError } from './getLoginError';
+export * from './json';
+export * from './languages';
+export * from './latex';
+export * from './localStorage';
+export { default as logger } from './logger';
+export * from './map';
+export * from './messages';
 export * from './presets';
+export * from './promptGroups';
 export * from './prompts';
 export * from './textarea';
-export * from './messages';
-export * from './languages';
-export * from './endpoints';
-export * from './localStorage';
-export * from './promptGroups';
-export { default as cn } from './cn';
-export { default as logger } from './logger';
-export { default as buildTree } from './buildTree';
-export { default as getLoginError } from './getLoginError';
-export { default as cleanupPreset } from './cleanupPreset';
-export { default as buildDefaultConvo } from './buildDefaultConvo';
-export { default as getDefaultEndpoint } from './getDefaultEndpoint';
+export * from './theme';
 
 export const languages = [
   'java',
@@ -122,6 +122,7 @@ export const normalizeLayout = (layout: number[]) => {
 export const playDing = () => {
   // 1. 创建音频元素
   const audio = new Audio(__APP_ENV__.BASE_URL + '/assets/ding.wav');
+  audio.volume = 0.5; // 50%音量
 
   // 2. 播放音频
   audio.play().catch(error => {
@@ -148,6 +149,7 @@ export const playDing = () => {
  * @param {boolean} shouldExpand - true表示展开，false表示关闭
  */
 export const toggleNav = (shouldExpand) => {
+  return // 去掉自动收起展开
   // 获取导航栏切换按钮元素
   const navToggle = document.querySelector('div[id="toggle-left-nav"]');
 
@@ -164,4 +166,111 @@ export const toggleNav = (shouldExpand) => {
     // 触发点击事件来切换状态
     navToggle.click();
   }
+}
+
+/**
+ * 时间字符串格式化函数
+ * @param {string} time - 时间字符串，格式为 "YYYY-mm-ddTHH:MM:SS"
+ * @param {boolean} hideTime - 是否隐藏时分秒
+ * @return {string} 格式化后的时间字符串，格式为 "YYYY-mm-dd HH:MM:SS"
+ */
+export const formatTime = (time: string, hideTime: boolean = false) => {
+  const value = time.replace('T', ' ').replaceAll('-', '/');
+  return hideTime ? value.slice(0, -3) : value
+}
+
+// Date转换为目标格式
+export function formatDate(date: Date, format: string): string {
+  const addZero = (num) => num < 10 ? `0${num}` : `${num}`
+  const replacements = {
+    'yyyy': date.getFullYear(),
+    'yy': date.getFullYear() % 2000,
+    'MM': addZero(date.getMonth() + 1),
+    'dd': addZero(date.getDate()),
+    'HH': addZero(date.getHours()),
+    'mm': addZero(date.getMinutes()),
+    'ss': addZero(date.getSeconds())
+  }
+  return format.replace(/yyyy|yy|MM|dd|HH|mm|ss/g, (match) => replacements[match])
+}
+
+// param time: yyyy-mm-ddTxxxx
+export function formatStrTime(time: string, notSameDayFormat: string): string {
+  if (!time) return ''
+  const date1 = new Date(time)
+  const date2 = new Date()
+  return date1.getFullYear() === date2.getFullYear() &&
+    date1.getMonth() === date2.getMonth() &&
+    date1.getDate() === date2.getDate() ? formatDate(date1, 'HH:mm') : formatDate(date1, notSameDayFormat)
+}
+
+const copyTextInDom = (dom) => {
+  const range = document.createRange();
+
+  range.selectNode(dom);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+
+  return new Promise((res) => {
+    document.execCommand('copy');
+    window.getSelection().removeAllRanges();
+    res(dom.innerText);
+  })
+}
+
+// 复制到剪切板
+export const copyText = (text: string | HTMLElement) => {
+  // 复制 dom 内文本
+  if (typeof text !== 'string') return copyTextInDom(text)
+  // 高级 API直接复制文本（需要 https 环境）
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text)
+  }
+  // 通过把文本写入 dom, 间接通过选中 dom 复制文本
+  const areaDom = document.createElement("textarea");
+  // 设置样式使其不在屏幕上显示
+  areaDom.style.position = 'absolute';
+  areaDom.style.left = '-9999px';
+  areaDom.value = text;
+  document.body.appendChild(areaDom);
+
+  return copyTextInDom(areaDom).then((str) => {
+    document.body.removeChild(areaDom);
+  })
+};
+
+
+export function downloadFile(url, label) {
+  console.log('download file :>> ', url);
+
+  return axios.get(url, { responseType: "blob" }).then((res: any) => {
+    const blob = new Blob([res.data]);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = label;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }).catch(console.error);
+}
+
+
+// uuid
+export const generateUUID = (length: number) => {
+  let d = new Date().getTime()
+  const uuid = ''.padStart(length, 'x').replace(/[xy]/g, (c) => {
+    const r = (d + Math.random() * 16) % 16 | 0
+    d = Math.floor(d / 16)
+    return (c == 'x' ? r : (r & 0x7 | 0x8)).toString(16)
+  })
+  return uuid
+}
+
+
+// 取后缀名
+export function getFileExtension(filename) {
+  if (!filename) return '';
+  const basename = filename.split(/[\\/]/).pop(); // 去除路径
+  if (!basename) return '';
+  const match = basename.match(/\.([^.]+)$/);
+  return (match ? match[1] : '').toUpperCase();
 }

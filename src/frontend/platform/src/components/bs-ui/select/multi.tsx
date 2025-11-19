@@ -161,7 +161,7 @@ const MultiSelect = ({
     // search
     const handleSearch = useDebounce((e) => {
         const newValues = options.filter((item) => {
-            return item.label.toLowerCase().indexOf(e.target.value.toLowerCase()) !== -1
+            return item.label.toLowerCase().indexOf(e.target.value.trim().toLowerCase()) !== -1
         })
         setOptionFilter(newValues)
         onSearch?.(inputRef.current?.value || '')
@@ -256,7 +256,7 @@ const MultiSelect = ({
             }
             footerNode={children}
         >
-            <div className="mt-2">
+            <div className="mt-2 max-w-96">
                 {
                     optionFilter.map((item) => (
                         <MultiItem

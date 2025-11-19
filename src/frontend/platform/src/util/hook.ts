@@ -72,7 +72,7 @@ export function useTable<T extends object>(param, apiFun) {
     const [data, setData] = useState<T[]>([]);
     const [loaded, setLoaded] = useState(false);
 
-    const paramRef = useRef({});
+    const paramRef = useRef({ ...param });
 
     const requestIdRef = useRef(0); // 控制请求响应顺序
     const loadData = () => {
@@ -127,7 +127,13 @@ export function useTable<T extends object>(param, apiFun) {
         refreshData: (compareFn, data) => {
             // 乐观更新
             setData(list => {
-                return list.map(item => compareFn(item) ? { ...item, ...data } : item)
+                return list.map(item => {
+                    if (compareFn(item)) {
+                        const other = typeof data === 'function' ? data(item) : data
+                        return { ...item, ...other }
+                    }
+                    return item
+                })
             })
         },
         clean: () => {

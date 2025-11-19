@@ -5,14 +5,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
-from bisheng_langchain.gpts.assistant import ConfigurableAssistant
-from bisheng_langchain.gpts.auto_optimization import (generate_breif_description,
-                                                      generate_opening_dialog,
-                                                      optimize_assistant_prompt)
-from bisheng_langchain.gpts.auto_tool_selected import ToolInfo, ToolSelector
-from bisheng_langchain.gpts.load_tools import load_tools
-from bisheng_langchain.gpts.prompts import ASSISTANT_PROMPT_OPT
-from bisheng_langchain.gpts.tools.api_tools.openapi import OpenApiTools
 from langchain_core.callbacks import Callbacks
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
@@ -25,19 +17,28 @@ from loguru import logger
 
 from bisheng.api.services.assistant_base import AssistantUtils
 from bisheng.api.services.knowledge_imp import decide_vectorstores
-from bisheng.api.services.llm import LLMService
 from bisheng.api.services.openapi import OpenApiSchema
 from bisheng.api.utils import build_flow_no_yield
 from bisheng.api.v1.schemas import InputRequest
+from bisheng.common.errcode.assistant import AssistantModelEmptyError, AssistantModelNotConfigError
 from bisheng.database.constants import ToolPresetType
 from bisheng.database.models.assistant import Assistant, AssistantLink, AssistantLinkDao
 from bisheng.database.models.flow import FlowDao, FlowStatus
 from bisheng.database.models.gpts_tools import GptsTools, GptsToolsDao, GptsToolsType
-from bisheng.database.models.knowledge import Knowledge, KnowledgeDao
+from bisheng.knowledge.domain.models.knowledge import Knowledge, KnowledgeDao
+from bisheng.llm.domain.services import LLMService
 from bisheng.mcp_manage.langchain.tool import McpTool
 from bisheng.mcp_manage.manager import ClientManager
-from bisheng.settings import settings
+from bisheng.common.services.config_service import settings
 from bisheng.utils.embedding import decide_embeddings
+from bisheng_langchain.gpts.assistant import ConfigurableAssistant
+from bisheng_langchain.gpts.auto_optimization import (generate_breif_description,
+                                                      generate_opening_dialog,
+                                                      optimize_assistant_prompt)
+from bisheng_langchain.gpts.auto_tool_selected import ToolInfo, ToolSelector
+from bisheng_langchain.gpts.load_tools import load_tools
+from bisheng_langchain.gpts.prompts import ASSISTANT_PROMPT_OPT
+from bisheng_langchain.gpts.tools.api_tools.openapi import OpenApiTools
 
 
 class AssistantAgent(AssistantUtils):
@@ -84,9 +85,9 @@ class AssistantAgent(AssistantUtils):
 
     async def init_llm(self):
         # 获取配置的助手模型列表
-        assistant_llm = LLMService.get_assistant_llm()
+        assistant_llm = await LLMService.get_assistant_llm()
         if not assistant_llm.llm_list:
-            raise Exception('助手推理模型列表为空')
+            raise AssistantModelEmptyError()
         default_llm = None
         for one in assistant_llm.llm_list:
             if str(one.model_id) == self.assistant.model_name:
@@ -95,7 +96,7 @@ class AssistantAgent(AssistantUtils):
             elif not default_llm and one.default:
                 default_llm = one
         if not default_llm:
-            raise Exception('未配置助手推理模型')
+            raise AssistantModelNotConfigError()
 
         self.llm_agent_executor = default_llm.agent_executor_type
         self.knowledge_retriever = {
@@ -104,19 +105,19 @@ class AssistantAgent(AssistantUtils):
         }
 
         # 初始化llm
-        self.llm = LLMService.get_bisheng_llm(model_id=default_llm.model_id,
-                                              temperature=self.assistant.temperature,
-                                              streaming=default_llm.streaming)
+        self.llm = await LLMService.get_bisheng_llm(model_id=default_llm.model_id,
+                                                    temperature=self.assistant.temperature,
+                                                    streaming=default_llm.streaming)
 
     async def init_auto_update_llm(self):
         """ 初始化自动优化prompt等信息的llm实例 """
-        assistant_llm = LLMService.get_assistant_llm()
+        assistant_llm = await LLMService.get_assistant_llm()
         if not assistant_llm.auto_llm:
             raise Exception('未配置助手画像自动优化模型')
 
-        self.llm = LLMService.get_bisheng_llm(model_id=assistant_llm.auto_llm.model_id,
-                                              temperature=self.assistant.temperature,
-                                              streaming=assistant_llm.auto_llm.streaming)
+        self.llm = await LLMService.get_bisheng_llm(model_id=assistant_llm.auto_llm.model_id,
+                                                    temperature=self.assistant.temperature,
+                                                    streaming=assistant_llm.auto_llm.streaming)
 
     @staticmethod
     def parse_tool_params(tool: GptsTools) -> Dict:
@@ -125,7 +126,13 @@ class AssistantAgent(AssistantUtils):
         """
         # 特殊处理下bisheng_code_interpreter的参数
         if tool.tool_key == 'bisheng_code_interpreter':
-            return {'minio': settings.get_minio_conf().model_dump()}
+            params = {}
+            if tool.extra:
+                if isinstance(tool.extra, str):
+                    params = json.loads(tool.extra)
+                elif isinstance(tool.extra, dict):
+                    params = tool.extra
+            return {'minio': settings.get_minio_conf().model_dump(), **params}
         if not tool.extra:
             return {}
         params = json.loads(tool.extra)
@@ -337,7 +344,7 @@ class AssistantAgent(AssistantUtils):
         """通过名称获取tool 列表
            tools_name_param:: {name: params}
         """
-        links: List[AssistantLink] = AssistantLinkDao.get_assistant_link(
+        links: List[AssistantLink] = await AssistantLinkDao.get_assistant_link(
             assistant_id=self.assistant.id)
         # tool
         tools: List[BaseTool] = []
@@ -420,7 +427,16 @@ class AssistantAgent(AssistantUtils):
                                                llm=self.llm,
                                                assistant_message=prompt)
         else:
+            # function-calling模式，也添加递归限制
+            logger.info(f'Creating LangGraph agent with {len(self.tools)} tools, llm type: {type(self.llm)}')
+            logger.info(f'LLM streaming capability: {getattr(self.llm, "streaming", "unknown")}')
+
             self.agent = create_react_agent(self.llm, self.tools, prompt=prompt, checkpointer=False)
+            logger.info(f'LangGraph agent created: {type(self.agent)}')
+
+            # 为agent添加递归限制配置
+            self.agent = self.agent.with_config({'recursion_limit': 100})
+            logger.info(f'Agent config applied: recursion_limit=100')
 
     async def optimize_assistant_prompt(self):
         """ 自动优化生成prompt """
@@ -543,6 +559,67 @@ class AssistantAgent(AssistantUtils):
         await self.record_chat_history([one.to_json() for one in result])
 
         return result
+
+    async def astream(self, query: str, chat_history: List = None, callback: Callbacks = None):
+        """
+        运行智能体对话 - 流式版本
+        """
+        await self.fake_callback(callback)
+
+        if chat_history:
+            chat_history.append(HumanMessage(content=query))
+            inputs = chat_history
+        else:
+            inputs = [HumanMessage(content=query)]
+
+        # trim message
+        inputs = await self.trim_messages(inputs)
+
+        if self.current_agent_executor == 'ReAct':
+            # ReAct模式暂时不支持流式，降级到非流式
+            result = await self.react_run(inputs, callback)
+            # 记录聊天历史
+            await self.record_chat_history([one.to_json() for one in result])
+            yield result
+        else:
+            # 使用流式调用
+            config = RunnableConfig(callbacks=callback)
+            final_messages = []
+
+            logger.info(f'Using function-calling mode, starting astream...')
+
+            chunk_count = 0
+
+            try:
+                # 使用messages模式的LangGraph streaming获得token级别的流式输出
+                async for chunk in self.agent.astream({'messages': inputs}, config=config, stream_mode="messages"):
+                    chunk_count += 1
+
+                    # stream_mode="messages" 返回 (message, metadata) 元组
+                    message = None
+                    if isinstance(chunk, tuple) and len(chunk) >= 2:
+                        message, metadata = chunk[:2]
+                    elif hasattr(chunk, 'content'):
+                        # 直接是消息对象
+                        message = chunk
+
+                    if message:
+                        # stream_mode="messages"返回的是独立chunk，直接使用其内容
+                        final_messages = [message]  # 保存消息用于历史记录
+                        yield [message]
+
+            except Exception as astream_error:
+                logger.exception(f'Error in astream async for loop: {str(astream_error)}')
+                raise astream_error
+
+            logger.info(f'Function calling astream completed, total chunks: {chunk_count}')
+
+            if chunk_count == 0:
+                logger.warning(f'No chunks received from agent.astream()! This indicates a streaming issue.')
+
+            # 记录聊天历史
+            if final_messages:
+                await self.record_chat_history([one.to_json() for one in final_messages])
 
     async def react_run(self, inputs: List, callback: Callbacks = None):
         """ react 模式的输入和执行 """

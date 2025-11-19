@@ -1,37 +1,39 @@
 import json
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
 from fastapi import Request
 from loguru import logger
 
-from bisheng.api.errcode.assistant import (AssistantInitError, AssistantNameRepeatError,
-                                           AssistantNotEditError, AssistantNotExistsError, ToolTypeRepeatError,
-                                           ToolTypeNotExistsError, ToolTypeIsPresetError)
-from bisheng.api.errcode.base import UnAuthorizedError, NotFoundError
 from bisheng.api.services.assistant_agent import AssistantAgent
 from bisheng.api.services.assistant_base import AssistantUtils
 from bisheng.api.services.audit_log import AuditLogService
 from bisheng.api.services.base import BaseService
-from bisheng.api.services.llm import LLMService
 from bisheng.api.services.tool import ToolServices
 from bisheng.api.services.user_service import UserPayload
-from bisheng.api.utils import get_request_ip
 from bisheng.api.v1.schemas import (AssistantInfo, AssistantSimpleInfo, AssistantUpdateReq,
                                     StreamData, UnifiedResponseModel, resp_200, resp_500)
-from bisheng.cache import InMemoryCache
+from bisheng.common.errcode.assistant import (AssistantInitError, AssistantNameRepeatError,
+                                              AssistantNotEditError, AssistantNotExistsError, ToolTypeRepeatError,
+                                              ToolTypeIsPresetError)
+from bisheng.common.errcode.http_error import UnAuthorizedError, NotFoundError
+from bisheng.core.cache import InMemoryCache
 from bisheng.database.constants import ToolPresetType
 from bisheng.database.models.assistant import (Assistant, AssistantDao, AssistantLinkDao,
                                                AssistantStatus)
-from bisheng.database.models.flow import Flow, FlowDao
+from bisheng.database.models.flow import Flow, FlowDao, FlowType
 from bisheng.database.models.gpts_tools import GptsToolsDao, GptsToolsTypeRead, GptsTools
 from bisheng.database.models.group_resource import GroupResourceDao, GroupResource, ResourceTypeEnum
-from bisheng.database.models.knowledge import KnowledgeDao
+from bisheng.knowledge.domain.models.knowledge import KnowledgeDao
 from bisheng.database.models.role_access import AccessType, RoleAccessDao
+from bisheng.database.models.session import MessageSessionDao
 from bisheng.database.models.tag import TagDao
 from bisheng.database.models.user import UserDao
 from bisheng.database.models.user_group import UserGroupDao
 from bisheng.database.models.user_role import UserRoleDao
+from bisheng.llm.domain.services import LLMService
+from bisheng.share_link.domain.models.share_link import ShareLink
+from bisheng.utils import get_request_ip
 
 
 class AssistantService(BaseService, AssistantUtils):
@@ -107,19 +109,24 @@ class AssistantService(BaseService, AssistantUtils):
         return AssistantSimpleInfo(**simple_dict)
 
     @classmethod
-    def get_assistant_info(cls, assistant_id: str, login_user: UserPayload):
-        assistant = AssistantDao.get_one_assistant(assistant_id)
+    async def get_assistant_info(cls, assistant_id: str, login_user: UserPayload,
+                                 share_link: Union['ShareLink', None] = None):
+        assistant = await AssistantDao.aget_one_assistant(assistant_id)
         if not assistant or assistant.is_delete:
             return AssistantNotExistsError.return_resp()
         # 检查是否有权限获取信息
-        if not login_user.access_check(assistant.user_id, assistant.id, AccessType.ASSISTANT_READ):
-            return UnAuthorizedError.return_resp()
+        if not await login_user.async_access_check(assistant.user_id, assistant.id, AccessType.ASSISTANT_READ):
+
+            if (share_link is None
+                    or share_link.meta_data is None
+                    or share_link.meta_data.get("flowId") != assistant.id):
+                return UnAuthorizedError.return_resp()
 
         tool_list = []
         flow_list = []
         knowledge_list = []
 
-        links = AssistantLinkDao.get_assistant_link(assistant_id)
+        links = await AssistantLinkDao.get_assistant_link(assistant_id)
         for one in links:
             if one.tool_id:
                 tool_list.append(one.tool_id)
@@ -131,7 +138,7 @@ class AssistantService(BaseService, AssistantUtils):
                 logger.error(f'not expect link info: {one.dict()}')
         tool_list, flow_list, knowledge_list = cls.get_link_info(tool_list, flow_list,
                                                                  knowledge_list)
-        assistant.logo = cls.get_logo_share_link(assistant.logo)
+        assistant.logo = await cls.get_logo_share_link_async(assistant.logo)
         return resp_200(data=AssistantInfo(**assistant.dict(),
                                            tool_list=tool_list,
                                            flow_list=flow_list,
@@ -149,11 +156,11 @@ class AssistantService(BaseService, AssistantUtils):
         logger.info(f"assistant original prompt id: {assistant.id}, desc: {assistant.prompt}")
 
         # 自动补充默认的模型配置
-        assistant_llm = LLMService.get_assistant_llm()
+        assistant_llm = await LLMService.get_assistant_llm()
         if assistant_llm.llm_list:
             for one in assistant_llm.llm_list:
                 if one.default:
-                    assistant.model_name = one.model_id
+                    assistant.model_name = str(one.model_id)
                     break
 
         # 自动生成描述
@@ -214,6 +221,10 @@ class AssistantService(BaseService, AssistantUtils):
 
         # 清理和用户组的关联
         GroupResourceDao.delete_group_resource_by_third_id(assistant.id, ResourceTypeEnum.ASSISTANT)
+
+        # 更新会话信息
+        MessageSessionDao.update_session_info_by_flow(assistant.name, assistant.desc, assistant.logo,
+                                                      assistant.id, FlowType.ASSISTANT.value)
         return True
 
     @classmethod
@@ -376,12 +387,9 @@ class AssistantService(BaseService, AssistantUtils):
         tool_type_ids_extra = []
         if is_preset != ToolPresetType.PRESET.value:
             # 获取自定义工具列表时，需要包含用户可用的工具列表
-            user_role = UserRoleDao.get_user_roles(user.user_id)
-            if user_role:
-                role_ids = [role.role_id for role in user_role]
-                role_access = RoleAccessDao.get_role_access(role_ids, AccessType.GPTS_TOOL_READ)
-                if role_access:
-                    tool_type_ids_extra = [int(access.third_id) for access in role_access]
+            access_resources = user.get_user_access_resource_ids([AccessType.GPTS_TOOL_READ])
+            if access_resources:
+                tool_type_ids_extra = [int(access) for access in access_resources]
         # 获取用户可见的所有工具列表
         if is_preset is None:
             all_tool_type = GptsToolsDao.get_user_tool_type(user.user_id, tool_type_ids_extra)
@@ -393,27 +401,41 @@ class AssistantService(BaseService, AssistantUtils):
             all_tool_type = GptsToolsDao.get_user_tool_type(user.user_id, tool_type_ids_extra, False,
                                                             ToolPresetType(is_preset))
         tool_type_id = [one.id for one in all_tool_type]
-        res = []
+        res: List[GptsToolsTypeRead] = []
         tool_type_children = {}
+        need_judge_write_tool_type = []
         for one in all_tool_type:
+            if one.user_id != user.user_id:
+                need_judge_write_tool_type.append(one.id)
             tool_type_id.append(one.id)
             tool_type_children[one.id] = []
-            res.append(one.model_dump())
+            res.append(GptsToolsTypeRead.model_validate(one))
 
         # 获取对应类别下的工具列表
         tool_list = GptsToolsDao.get_list_by_type(tool_type_id)
         for one in tool_list:
             tool_type_children[one.type].append(one)
 
+        # check write permission
+        write_tool_type = None
         for one in res:
-            one['write'] = one['id'] not in tool_type_ids_extra or one['user_id'] == user.user_id
-            if not user.is_admin():
-                one['extra'] = ''
-            one["children"] = tool_type_children.get(one["id"], [])
-            if one['extra']:
-                extra = json.loads(one['extra'])
-                one["parameter_name"] = extra.get("parameter_name")
-                one["api_location"] = extra.get("api_location")
+            if user.is_admin() or one.user_id == user.user_id:
+                one.write = True
+            else:
+                if write_tool_type is None:
+                    write_resources = user.get_user_access_resource_ids([AccessType.GPTS_TOOL_WRITE])
+                    write_tool_type = {int(x): True for x in write_resources}
+                one.write = write_tool_type.get(one.id, False)
+            one.children = tool_type_children.get(one.id, [])
+
+            # no write auth, clear sensitive info
+            if not one.write:
+                one.api_key = ""
+                one.extra = None
+                # preset tool extra contains sensitive information
+                if one.is_preset == ToolPresetType.PRESET.value:
+                    for child in one.children:
+                        child.extra = None
 
         return res
 
@@ -430,7 +452,7 @@ class AssistantService(BaseService, AssistantUtils):
         return tool_type
 
     @classmethod
-    async def add_gpts_tools(cls, user: UserPayload, req: GptsToolsTypeRead) -> UnifiedResponseModel:
+    async def add_gpts_tools(cls, request: Request, user: UserPayload, req: GptsToolsTypeRead) -> UnifiedResponseModel:
         """ 添加自定义工具 """
         # 尝试解析下openapi schema看下是否可以正常解析, 不能的话保存不允许保存
         tool_service = ToolServices()
@@ -454,111 +476,35 @@ class AssistantService(BaseService, AssistantUtils):
             one.is_delete = 0
             one.is_preset = req.is_preset
 
+        tool_extra = {"api_location": req.api_location, "parameter_name": req.parameter_name}
+        req.extra = json.dumps(tool_extra, ensure_ascii=False)
         # 添加工具类别和对应的 工具列表
         res = GptsToolsDao.insert_tool_type(req)
 
-        cls.add_gpts_tools_hook(user, res)
+        cls.add_gpts_tools_hook(request, user, res)
         return resp_200(data=res)
 
     @classmethod
-    def add_gpts_tools_hook(cls, user: UserPayload, gpts_tool_type: GptsToolsTypeRead) -> bool:
+    def add_gpts_tools_hook(cls, request: Request, user: UserPayload, gpts_tool_type: GptsToolsTypeRead) -> bool:
         """ 添加自定义工具后的hook函数 """
         # 查询下用户所在的用户组
         user_group = UserGroupDao.get_user_group(user.user_id)
+        group_ids = []
         if user_group:
             # 批量将自定义工具插入到关联表里
             batch_resource = []
             for one in user_group:
+                group_ids.append(one.group_id)
                 batch_resource.append(GroupResource(
                     group_id=one.group_id,
                     third_id=gpts_tool_type.id,
                     type=ResourceTypeEnum.GPTS_TOOL.value))
             GroupResourceDao.insert_group_batch(batch_resource)
+        AuditLogService.create_tool(user, get_request_ip(request), group_ids, gpts_tool_type)
         return True
 
     @classmethod
-    async def update_gpts_tools(cls, user: UserPayload, req: GptsToolsTypeRead) -> UnifiedResponseModel:
-        """
-        更新工具类别，包括更新工具类别的名称和删除、新增工具类别的API
-        """
-        # 尝试解析下openapi schema看下是否可以正常解析, 不能的话保存不允许保存
-        tool_service = ToolServices()
-        if req.is_preset == ToolPresetType.API.value:
-            await tool_service.parse_openapi_schema('', req.openapi_schema)
-        elif req.is_preset == ToolPresetType.MCP.value:
-            await tool_service.parse_mcp_schema(req.openapi_schema)
-
-        exist_tool_type = GptsToolsDao.get_one_tool_type(req.id)
-        if not exist_tool_type:
-            return ToolTypeNotExistsError.return_resp()
-        if req.name.__len__() > 1000 or req.name.__len__() == 0:
-            return resp_500(message="名字不符合规范：至少1个字符，不能超过1000个字符")
-
-        #  判断工具类别名称是否重复
-        tool_type = GptsToolsDao.get_one_tool_type_by_name(user.user_id, req.name)
-        if tool_type and tool_type.id != exist_tool_type.id:
-            return ToolTypeRepeatError.return_resp()
-        # 判断是否有更新权限
-        if not user.access_check(exist_tool_type.user_id, str(exist_tool_type.id), AccessType.GPTS_TOOL_WRITE):
-            return UnAuthorizedError.return_resp()
-
-        exist_tool_type.name = req.name
-        exist_tool_type.logo = req.logo
-        exist_tool_type.description = req.description
-        exist_tool_type.server_host = req.server_host
-        exist_tool_type.auth_method = req.auth_method
-        exist_tool_type.api_key = req.api_key
-        exist_tool_type.auth_type = req.auth_type
-        exist_tool_type.openapi_schema = req.openapi_schema
-        tool_extra = {"api_location": req.api_location, "parameter_name": req.parameter_name}
-        exist_tool_type.extra = json.dumps(tool_extra, ensure_ascii=False)
-
-        children_map = {}
-        for one in req.children:
-            save_key = GptsToolsDao.get_tool_key(exist_tool_type.id, one.tool_key)
-            save_key_prefix = save_key.split("_")[0]
-            if one.tool_key.startswith(save_key_prefix):
-                # 说明api和数据库的一致，没有通过openapiSchema重新解析
-                children_map[one.tool_key] = one
-            else:
-                children_map[save_key] = one
-
-        # 获取此类别下旧的API列表
-        old_tool_list = GptsToolsDao.get_list_by_type([exist_tool_type.id])
-        # 需要被删除的工具列表
-        delete_tool_id_list = []
-        # 需要被更新的工具列表
-        update_tool_list = []
-        for one in old_tool_list:
-            # 说明此工具 需要删除
-            if children_map.get(one.tool_key) is None:
-                delete_tool_id_list.append(one.id)
-            else:
-                # 说明此工具需要更新
-                new_tool_info = children_map.pop(one.tool_key)
-                one.name = new_tool_info.name
-                one.desc = new_tool_info.desc
-                one.extra = new_tool_info.extra
-                one.api_params = new_tool_info.api_params
-                update_tool_list.append(one)
-
-        add_children = []
-        for one in children_map.values():
-            one.id = None
-            one.user_id = user.user_id
-            one.is_preset = exist_tool_type.is_preset
-            one.is_delete = 0
-            add_children.append(one)
-
-        GptsToolsDao.update_tool_type(exist_tool_type, delete_tool_id_list,
-                                      add_children, update_tool_list)
-
-        children = GptsToolsDao.get_list_by_type([exist_tool_type.id])
-        res = GptsToolsTypeRead(**exist_tool_type.model_dump(), children=children)
-        return resp_200(data=res)
-
-    @classmethod
-    def delete_gpts_tools(cls, user: UserPayload, tool_type_id: int) -> UnifiedResponseModel:
+    def delete_gpts_tools(cls, request, user: UserPayload, tool_type_id: int) -> UnifiedResponseModel:
         """ 删除工具类别 """
         exist_tool_type = GptsToolsDao.get_one_tool_type(tool_type_id)
         if not exist_tool_type:
@@ -570,14 +516,17 @@ class AssistantService(BaseService, AssistantUtils):
             return UnAuthorizedError.return_resp()
 
         GptsToolsDao.delete_tool_type(tool_type_id)
-        cls.delete_gpts_tool_hook(user, exist_tool_type)
+        cls.delete_gpts_tool_hook(request, user, exist_tool_type)
         return resp_200()
 
     @classmethod
-    def delete_gpts_tool_hook(cls, user: UserPayload, gpts_tool_type) -> bool:
+    def delete_gpts_tool_hook(cls, request, user: UserPayload, gpts_tool_type) -> bool:
         """ 删除自定义工具后的hook函数 """
         logger.info(f"delete_gpts_tool_hook id: {gpts_tool_type.id}, user: {user.user_id}")
         GroupResourceDao.delete_group_resource_by_third_id(gpts_tool_type.id, ResourceTypeEnum.GPTS_TOOL)
+        groups = GroupResourceDao.get_resource_group(ResourceTypeEnum.GPTS_TOOL, gpts_tool_type.id)
+        group_ids = [int(one.group_id) for one in groups]
+        AuditLogService.delete_tool(user, get_request_ip(request), group_ids, gpts_tool_type)
         return True
 
     @classmethod

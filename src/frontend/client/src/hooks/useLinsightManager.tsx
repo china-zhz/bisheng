@@ -1,6 +1,6 @@
 // src/hooks/useLinsightManager.ts
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
     useRecoilCallback,
     useRecoilState,
@@ -11,9 +11,11 @@ import { SSE } from 'sse.js';
 import { SopStatus } from '~/components/Sop/SOPEditor';
 import { ConversationData, QueryKeys } from '~/data-provider/data-provider/src';
 import { useToastContext } from '~/Providers';
+import store from '~/store';
 import { activeSessionIdState, LinsightInfo, linsightMapState, submissionState, SubmissionState } from '~/store/linsight';
 import {
     addConversation,
+    formatTime,
     toggleNav
 } from '~/utils';
 
@@ -61,9 +63,9 @@ export const useLinsightManager = () => {
     }, [setLinsightMap]);
 
     // 获取会话信息
-    const getLinsight = useCallback((versionId: string) => {
+    const getLinsight = (versionId: string) => {
         return linsightMap.get(versionId) || null;
-    }, [linsightMap]);
+    };
 
     // 切换当前会话
     const switchSession = useCallback((versionId: string) => {
@@ -71,15 +73,15 @@ export const useLinsightManager = () => {
     }, [setActiveSessionId]);
 
     // 切换会话，更新会话信息
-    const switchAndUpdateLinsight = useCallback((versionId: string, update: any) => {
+    const switchAndUpdateLinsight = useCallback((versionId: string, update: any, customTask?: boolean) => {
         const linsight = getLinsight(versionId)
-        console.log('update :>> ', update);
-        if (linsight) return;
+        if (linsight) return updateLinsight(versionId, { inputSop: false }); // 恢复用户未输入状态
 
-        const { status, execute_feedback, output_result, tasks, files, ...params } = update
+        const { status, sop, execute_feedback, output_result, tasks, files, ...params } = update
         let newStatus = ''
         switch (status) {
             case 'not_started':
+            case 'sop_generation_failed':
                 newStatus = SopStatus.SopGenerated;
                 break;
             case 'in_progress':
@@ -89,6 +91,7 @@ export const useLinsightManager = () => {
                 newStatus = execute_feedback ? SopStatus.FeedbackCompleted : SopStatus.completed;
                 break;
             case 'terminated':
+            case 'failed':
                 newStatus = SopStatus.Stoped;
                 break;
             default:
@@ -99,15 +102,19 @@ export const useLinsightManager = () => {
             ...params,
             output_result,
             execute_feedback,
-            summary: output_result?.answer,
+            // summary: output_result?.answer,
             status: newStatus,
             files: files?.map(file => ({ ...file, file_name: decodeURIComponent(file.original_filename) })) || [],
-            tasks: buildTaskTree(tasks),
-            file_list: output_result?.final_files || []
+            tasks: customTask ? tasks : buildTaskTree(tasks),
+            taskError: 'failed' === status ? output_result?.error_message : '',
+            file_list: output_result?.final_files || [],
+            sop: 'sop_generation_failed' === status ? '' : sop,
+            sopError: 'sop_generation_failed' === status ? sop : '',
+            queueCount: 0
         }
 
         createLinsight(versionId, data);
-    }, [])
+    }, [linsightMap])
 
     return {
         createLinsight,
@@ -169,38 +176,36 @@ export const useGenerateSop = (versionId, setVersionId, setVersions) => {
     const { createLinsight, updateLinsight } = useLinsightManager()
     const queryClient = useQueryClient();
     const { showToast } = useToastContext();
+    const [error, setError] = useState(false);
+    const { setConversation } = store.useCreateConversationAtom(0);
+    // 使用 ref 存储当前活跃版本 ID
+    const activeVersionIdRef = useRef(versionId);
+    // 同步最新活跃版本 ID
+    useEffect(() => {
+        activeVersionIdRef.current = versionId;
+    }, [versionId]);
 
-    const mockGenerateSop = (versionId: string, feedback?: string) => {
-        console.log('Mock SSE started for version:', versionId, linsightSubmission);
-        setLoading(false)
-        updateLinsight(versionId, {
-            status: SopStatus.SopGenerating,
-        })
-
-        setTimeout(() => {
-            updateLinsight(versionId, {
-                sop: mockContent
-            })
-        }, 2000)
-
-        setTimeout(() => {
-            updateLinsight(versionId, {
-                status: SopStatus.SopGenerated,
-            })
-        }, 3000)
-    };
+    // 切换非新建会话不展示loading
+    useEffect(() => {
+        if (versionId !== 'new') setTimeout(() => {
+            setLoading(false)
+        }, 2000);
+    }, [versionId])
 
     // 生成会话
-    const generateSop = (_versionId, feedback?: string) => {
-        // return mockGenerateSop(_versionId, feedback)  // mock
+    const generateSop = (_versionId, sameSopId, linsightSubmission?: any) => {
         const payload = {
             linsight_session_version_id: _versionId,
-            feedback_content: feedback,
+            feedback_content: linsightSubmission?.feedback,
             reexecute: false
         }
-        if (feedback) {
-            payload.previous_session_version_id = versionId
+        if (linsightSubmission) {
+            payload.previous_session_version_id = linsightSubmission.prevVersionId
             payload.reexecute = true
+        }
+
+        if (sameSopId) {
+            payload.sop_id = sameSopId
         }
 
         const sse = new SSE(`${__APP_ENV__.BASE_URL}/api/v1/linsight/workbench/generate-sop`, {
@@ -211,12 +216,13 @@ export const useGenerateSop = (versionId, setVersionId, setVersions) => {
         });
 
         let content = ''
-
         sse.addEventListener('generate_sop_content', (e: MessageEvent) => {
             const data = JSON.parse(e.data);
             content += data.content
             updateLinsight(_versionId, {
-                sop: content.replace('```markdown\n', '')
+                sopError: '',
+                sop: content.replace(/^---/, '').replace('```markdown\n', '```'),
+                inputSop: false
             })
         })
 
@@ -227,32 +233,35 @@ export const useGenerateSop = (versionId, setVersionId, setVersions) => {
             })
         })
 
-
         sse.addEventListener('search_sop_error', (e: MessageEvent) => {
             // const data = JSON.parse(e.data);
             showToast({
                 message: e.data,
                 status: 'warning',
             });
+            updateLinsight(_versionId, {
+                sopError: e.data
+            })
         })
 
         sse.addEventListener('open', () => {
             console.log('connection is opened');
-            setLoading(false)
-            updateLinsight(_versionId, {
-                status: SopStatus.SopGenerating,
-            })
+            // setLoading(false)
         });
 
         sse.addEventListener('error', async (e: MessageEvent) => {
             console.error('object :>> ', e);
-            showToast({
-                message: 'SOP 生成失败，请联系管理员检查灵思任务执行模型状态',
-                status: 'error',
-            });
-            setLoading(false)
+            if (_versionId === activeVersionIdRef.current) { // 只有当前活跃会话才展示错误
+                showToast({
+                    message: 'SOP 生成失败，请联系管理员检查灵思任务执行模型状态',
+                    status: 'error',
+                });
+                setError(true)
+                setLoading(false)
+            }
             updateLinsight(_versionId, {
-                status: SopStatus.SopGenerating,
+                sopError: e.data,
+                status: SopStatus.SopGenerated,
             })
         })
         sse.stream();
@@ -293,11 +302,11 @@ export const useGenerateSop = (versionId, setVersionId, setVersions) => {
                     setVersionId(versionId)
                     setVersions((prevVersions) => [{
                         id: versionId,
-                        name: linsight_session_version.version.replace('T', ' ')
+                        name: formatTime(linsight_session_version.version, true)
                     }, ...prevVersions])
 
                     // replaceUrl
-                    window.history.replaceState({}, '', `${__APP_ENV__.BASE_URL}/sop/${linsight_session_version.session_id}`);
+                    window.history.replaceState({}, '', `${__APP_ENV__.BASE_URL}/linsight/${linsight_session_version.session_id}`);
 
                     createLinsight(versionId, {
                         status: SopStatus.SopGenerating, //linsight_session_version.status,
@@ -305,8 +314,8 @@ export const useGenerateSop = (versionId, setVersionId, setVersions) => {
                         files: linsight_session_version.files?.map(file => ({ ...file, file_name: decodeURIComponent(file.original_filename) })) || [],
                         user_id: linsight_session_version.user_id,
                         question: linsightSubmission.question,
-                        org_knowledge_enabled: false,
-                        personal_knowledge_enabled: false,
+                        org_knowledge_enabled,
+                        personal_knowledge_enabled,
                         sop: '',
                         execute_feedback: null,
                         version: versionId,
@@ -319,7 +328,11 @@ export const useGenerateSop = (versionId, setVersionId, setVersions) => {
                         title: message_session.flow_name,
                         tasks: [],
                         summary: '',
-                        file_list: []
+                        file_list: [],
+                        inputSop: false,
+                        sopError: '',
+                        taskError: '',
+                        queueCount: 0
                     })
                 })
 
@@ -332,6 +345,12 @@ export const useGenerateSop = (versionId, setVersionId, setVersions) => {
                         }
                         updateLinsight(versionId, {
                             title: data.task_title
+                        })
+                        setConversation((prevState: any) => {
+                            return {
+                                ...prevState,
+                                conversationId: data.chat_id
+                            }
                         })
                         return addConversation(convoData, {
                             conversationId: data.chat_id,
@@ -346,7 +365,7 @@ export const useGenerateSop = (versionId, setVersionId, setVersions) => {
                         });
                     });
                     // 开启生成sop
-                    generateSop(versionId)
+                    generateSop(versionId, linsightSubmission.sameSopId)
                 })
 
                 sse.addEventListener('open', () => {
@@ -355,25 +374,36 @@ export const useGenerateSop = (versionId, setVersionId, setVersions) => {
 
                 sse.addEventListener('error', async (e: MessageEvent) => {
                     console.error('object :>> ', e);
-                    showToast({
-                        message: 'SOP 生成失败，请联系管理员检查灵思任务执行模型状态',
-                        status: 'error',
-                    });
-                    setLoading(false)
+                    if (versionId === activeVersionIdRef.current) { // 只有当前活跃会话才展示错误
+                        showToast({
+                            message: 'SOP 生成失败，请联系管理员检查灵思任务执行模型状态',
+                            status: 'error',
+                        });
+                        setError(true)
+                        setLoading(false)
+                    }
                     updateLinsight(versionId, {
-                        status: SopStatus.SopGenerating,
+                        sopError: e.data,
+                        status: SopStatus.SopGenerated,
                     })
                 })
                 sse.stream();
             } else {
-                generateSop(versionId, linsightSubmission.feedback)
+                generateSop(versionId, linsightSubmission.sameSopId, linsightSubmission)
             }
 
+            updateLinsight(versionId, {
+                status: SopStatus.SopGenerating,
+                taskError: '',
+                sopError: '',
+                sop: ''
+            })
             clearLinsightSubmission(versionId)
+            setError(false)
         }
     }, [linsightSubmission])
 
-    return loading
+    return [loading, error]
 }
 
 
@@ -400,7 +430,8 @@ const convertTools = (tools) => {
                     return {
                         id: api.id,
                         name: api.name,
-                        tool_key: api.tool_key
+                        tool_key: api.tool_key,
+                        desc: api.desc
                     }
                 })
             })
@@ -416,25 +447,34 @@ const convertTools = (tools) => {
 
 
 function buildTaskTree(tasks) {
+    let hasTerminated = false
     const newTasks = tasks.map(task => {
-        return {
+        const taskTree = {
             id: task.id,
-            name: task.task_data?.target || '',
-            status: task.status,
+            name: task.task_data?.display_target || '',
+            status: hasTerminated ? 'not_started' : task.status === 'waiting_for_user_input' ? 'user_input' : task.status,
             history: task.history || [],
             event_type: task.status === 'waiting_for_user_input' ? 'user_input' : '',
-            call_reason: '',
+            call_reason: task.input_prompt || '',
+            errorMsg: task.result?.answer || '',
             children: task.children?.map(child => {
                 return {
                     id: child.id,
-                    name: child.task_data?.target || '',
-                    status: child.status,
+                    name: child.task_data?.display_target || '',
+                    status: child.status === 'waiting_for_user_input' ? 'user_input' : child.status,
                     history: child.history || [],
                     event_type: child.status === 'waiting_for_user_input' ? 'user_input' : '',
                     call_reason: ''
                 }
             }) || []
         }
+
+        // 处理终止后的任务全部为not_started（隐藏）
+        if (['terminated', 'failed'].includes(task.status)) {
+            hasTerminated = true
+        }
+
+        return taskTree
     })
     return newTasks
 
@@ -486,58 +526,3 @@ function buildTaskTree(tasks) {
 
     // return rootTasks;
 }
-
-const mockContent = `
-# SOP: 中美贸易逆顺差分析
-
-## 问题概述
-
-本SOP旨在帮助用户理解中美两国之间存在的贸易逆差或顺差情况，包括但不限于主要商品类别、影响因素及历史趋势等方面。适用于对国际贸易感兴趣的研究者、政策制定者以及相关行业从业者。
-
-## 所需工具和资源
-
-- **Bing搜索引擎** - 获取关于中美贸易数据的文章、研究报告等资料。
-- **世界银行公开数据库** - 提供详细的国家间贸易统计数据。
-- **中国海关总署网站** - 官方发布最新的进出口统计信息。
-- **美国商务部网站** - 同样提供官方发布的贸易数据。
-
-### 工具使用最佳实践
-
-- 使用Bing搜索时，请确保输入具体的关键词以获得更准确的结果，例如“中美贸易逆差”、“中美贸易数据分析”等。
-- 访问世界银行数据库时，利用其内置的筛选功能快速定位到中美之间的贸易数据。
-- 在查阅中国海关总署与美国商务部提供的信息时，注意查看最新发布的报告，并关注官方解释部分，以便更好地理解背景。
-
-## 详细的步骤说明
-
-1. **确定研究重点**
-
-   - 明确想要深入探讨的具体方面，如特定年份内的变化趋势、主要受影响的商品种类等。
-2. **收集基础数据**
-
-   - 利用 bing_search函数查找关于中美贸易概况的基础介绍性文章。
-   - 通过访问@world_bank_database获取两国间历年来的详细贸易数额记录。
-3. **分析关键指标**
-
-   - 结合从中国海关总署(@china_customs)和美国商务部(@us_department_of_commerce)获取的数据，对比分析不同时间段内双方出口与进口额的变化。
-4. **识别影响因素**
-
-   - 再次运用 bing_search，专注于寻找专家对于造成当前贸易状况背后原因的分析。
-5. **整理并总结发现**
-
-   - 将所有收集到的信息整合起来，提炼出导致中美贸易不平衡的主要原因及其潜在影响。
-6. **撰写最终报告**
-
-   - 如果需要生成一份详尽文档，则应先规划好大纲结构，然后按照@write_document的方式逐步完成每个章节的内容编写工作。
-
-## 可能遇到的问题及解决方案
-
-- **问题：数据解读困难**
-
-  - **解决方案**：尝试联系该领域的专家进行咨询；同时也可以参考更多可视化图表来辅助理解复杂的数据集。
-- **问题：难以找到足够全面的历史数据**
-
-  - **解决方案**：除了官方渠道外，还可以探索学术期刊中发表的相关研究论文，这些往往包含了长期追踪调查所得出的结论。
-- **问题：面对大量信息感到无从下手**
-
-  - **解决方案**：建议采用分步走策略，即先从最基础的概念开始学习，再逐渐过渡到更深层次的分析；此外，建立一个清晰的目标列表也有助于保持研究方向的一致性。
-`

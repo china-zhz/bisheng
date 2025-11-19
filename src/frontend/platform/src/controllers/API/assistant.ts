@@ -52,7 +52,7 @@ export const saveAssistanttApi = async (
 ): Promise<any> => {
     if (data.logo) {
         // logo保存相对路径
-        data.logo = data.logo.replace('/bisheng', '')
+        data.logo = data.logo.replace(/^\/\w+/, '')
     }
     return await axios.put(`/api/v1/assistant`, data)
 };
@@ -85,6 +85,16 @@ export const getChatOnlineApi = async (page, keyword, tag_id) => {
 // 1：预置工具
 // 2：mcp工具
 export const getAssistantToolsApi = async (type: 'all' | 'default' | 'custom' | 'mcp'): Promise<any> => {
+    const queryStr = {
+        all: '',
+        default: '?is_preset=1',
+        custom: '?is_preset=0',
+        mcp: '?is_preset=2'
+    }
+    return await axios.get(`/api/v1/assistant/tool_list${queryStr[type]}`)
+};
+//有管理权限
+export const getAssistantToolsWithManageApi = async (type: 'all' | 'default' | 'custom' | 'mcp'): Promise<any> => {
     const queryStr = {
         all: '',
         default: '?is_preset=1',

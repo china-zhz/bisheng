@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from langchain_core.messages import HumanMessage
 
+from bisheng.database.models.user import UserDao
 from bisheng.utils.exceptions import IgnoreException
 from bisheng.workflow.callback.base_callback import BaseCallback
 from bisheng.workflow.callback.event import NodeEndData, NodeStartData
@@ -51,11 +52,13 @@ class BaseNode(ABC):
 
         # 存储临时数据的 milvus 集合名 和 es 集合名 用workflow_id作为分区键
         # ！！！同一个collection中向量数据必须是同一个embedding_model生成的，所以集合名中需要包含embedding_model_id
-        self.tmp_collection_name = 'tmp_workflow_data'
+        self.tmp_collection_name = 'tmp_workflow_data_new'
 
         self.stop_flag = False
 
         self.exec_unique_id = None
+
+        self.user_info = None
 
         # 简单参数解析
         self.init_data()
@@ -68,6 +71,11 @@ class BaseNode(ABC):
         for one in self.node_data.group_params:
             for param_info in one.params:
                 self.node_params[param_info.key] = copy.deepcopy(param_info.value)
+
+    def init_user_info(self):
+        if self.user_info:
+            return
+        self.user_info = UserDao.get_user(int(self.user_id))
 
     @abstractmethod
     def _run(self, unique_id: str) -> Dict[str, Any]:

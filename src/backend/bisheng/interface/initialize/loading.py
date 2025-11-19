@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Sequence, Type
 
 import httpx
 import openai
-from bisheng.cache.utils import file_download
-from bisheng.database.models.knowledge import KnowledgeDao
+from bisheng.core.cache.utils import file_download
+from bisheng.knowledge.domain.models.knowledge import KnowledgeDao
 from bisheng.interface.agents.base import agent_creator
 from bisheng.interface.chains.base import chain_creator
 from bisheng.interface.custom_lists import CUSTOM_NODES
@@ -21,7 +21,7 @@ from bisheng.interface.retrievers.base import retriever_creator
 from bisheng.interface.toolkits.base import toolkits_creator
 from bisheng.interface.utils import load_file_into_dict
 from bisheng.interface.wrappers.base import wrapper_creator
-from bisheng.settings import settings
+from bisheng.common.services.config_service import settings
 from bisheng.utils import validate
 from bisheng.utils.constants import NODE_ID_DICT, PRESET_QUESTION
 from bisheng.utils.embedding import decide_embeddings
@@ -487,8 +487,9 @@ def instantiate_vectorstore(node_type: str, class_object: Type[VectorStore], par
 
         # 获取执行用户 有权限查看的知识库列表
         knowledge_ids = [one['key'] for one in params[col_name]]
+        include_private = params.pop('_include_private', False)  # 获取是否包含个人知识库参数
         if params.pop('_is_check_auth', True):
-            knowledge_list = KnowledgeDao.judge_knowledge_permission(user_name, knowledge_ids)
+            knowledge_list = KnowledgeDao.judge_knowledge_permission(user_name, knowledge_ids, include_private)
         else:
             knowledge_list = KnowledgeDao.get_list_by_ids(knowledge_ids)
         logger.debug(f'{node_type} after filter, get knowledge_list: {knowledge_list}')

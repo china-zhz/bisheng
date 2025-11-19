@@ -1,7 +1,7 @@
 import { QuestionMarkIcon } from "@/components/bs-icons/questionMark";
 import { UploadIcon } from "@/components/bs-icons/upload";
 import { Input } from "@/components/bs-ui/input";
-import { AssistantItemDB, getAssistantsApi } from "@/controllers/API/assistant";
+import { getAppsApi } from "@/controllers/API/flow";
 import { createEvaluationApi } from "@/controllers/API/evaluate";
 import { TypeModal } from "@/utils";
 import { SelectViewport } from "@radix-ui/react-select";
@@ -31,10 +31,10 @@ import {
 } from "@/components/bs-ui/tooltip";
 import { alertContext } from "@/contexts/alertContext";
 import { TabsContext } from "@/contexts/tabsContext";
-import { readFlowsFromDatabase } from "@/controllers/API/flow";
 import PromptAreaComponent from "./PromptCom";
 import defaultPrompt from "./defaultPrompt";
 import { useToast } from "@/components/bs-ui/toast/use-toast";
+import { captureAndAlertRequestErrorHoc } from "@/controllers/request";
 
 export default function EvaluatingCreate() {
   const { t } = useTranslation();
@@ -45,9 +45,7 @@ export default function EvaluatingCreate() {
   const flow = useMemo(() => {
     return id ? nextFlow : null;
   }, [nextFlow]);
-  const [selectedType, setSelectedType] = useState<"flow" | "assistant" | "">(
-    ""
-  );
+  const [selectedType, setSelectedType] = useState<"workflow" | "assistant" | "flow" | "">("");
   const [selectedKeyId, setSelectedKeyId] = useState("");
   const [selectedVersion, setSelectedVersion] = useState("");
   const [query, setQuery] = useState("");
@@ -59,9 +57,23 @@ export default function EvaluatingCreate() {
   const fileRef = useRef(null);
 
   const onDrop = (acceptedFiles) => {
+    const file = acceptedFiles[0];
+    if (!file) return;
+
+    const fileExt = file.name.split('.').pop()?.toLowerCase();
+
+
     fileRef.current = acceptedFiles[0];
     const size = fileRef.current.size
     const errorlist = [];
+
+    // 1. 后缀名校验（双重保险）
+    if (fileExt !== 'csv') {
+      errorlist.push(t("只允许上传csv格式的文件"));
+      fileRef.current = null;
+      handleError(errorlist);
+      return;
+    }
 
     // 限制文件最大为 10M
     if (size > 10 * 1024 * 1024) {
@@ -74,13 +86,29 @@ export default function EvaluatingCreate() {
     setFileName(names);
   };
 
-  const { getRootProps, getInputProps } = useDropzone({
+  const { getRootProps, getInputProps, isDragActive, rejectedFiles } = useDropzone({
+    // 精准匹配CSV的MIME类型和后缀，避免其他文件绕过
     accept: {
-      "application/*": [".csv"],
+      "text/csv": [".csv"],          // 标准CSV文本类型
+      "application/csv": [".csv"],   // 部分浏览器识别的CSV应用类型
+      "application/vnd.ms-excel": [".csv"] // 兼容旧版Excel导出的CSV
     },
     useFsAccessApi: false,
     onDrop,
     maxFiles: 1,
+    onDropRejected: (files) => {
+      if (files.length > 0) {
+        // 检查被拒绝的文件类型
+        const rejectedFile = files[0];
+        const fileExt = rejectedFile.file.name.split('.').pop()?.toLowerCase();
+
+        if (fileExt === 'xlsx' || fileExt === 'xls') {
+          handleError([t("不支持Excel格式，请上传CSV文件")]);
+        } else {
+          handleError([t("仅支持CSV格式")]);
+        }
+      }
+    }
   });
 
   const navigate = useNavigate();
@@ -88,22 +116,44 @@ export default function EvaluatingCreate() {
   const handleCreateEvaluation = async () => {
     const errorlist = [];
     if (!selectedType) errorlist.push(t("evaluation.enterExecType"));
-    if (!selectedKeyId) errorlist.push(t("evaluation.enterUniqueId"));
-    if (selectedType === "flow" && !selectedVersion)
-      errorlist.push(t("evaluation.enterVersion"));
-    if (!fileRef.current) errorlist.push(t("evaluation.enterFile"));
+
+    if (selectedType && !selectedKeyId) {
+      if (selectedType === "workflow") errorlist.push(t("请选择工作流"));
+      if (selectedType === "flow") errorlist.push(t("请选择技能"));
+      if (selectedType === "assistant") errorlist.push(t("请选择助手"));
+    }
+
+    if (selectedKeyId && (selectedType === "workflow" || selectedType === "flow") && !selectedVersion) {
+      errorlist.push(t("请选择版本"));
+    }
+    if (
+      !fileRef.current &&
+      selectedKeyId &&
+      (
+        (selectedType === "workflow" || selectedType === "flow") && selectedVersion // 有版本的类型已选版本
+        || selectedType === "assistant" // 不需要版本的类型
+      )
+    ) {
+      errorlist.push(t("evaluation.enterFile"));
+    }
     if (!prompt) errorlist.push(t("evaluation.enterPrompt"));
 
     if (errorlist.length) return handleError(errorlist);
     setLoading(true);
     try {
-      await createEvaluationApi({
-        exec_type: selectedType,
-        unique_id: selectedKeyId,
-        version: selectedVersion,
-        prompt,
-        file: fileRef.current,
-      });
+      const formData = new FormData();
+      formData.append('exec_type', selectedType);       // 执行类型
+      formData.append('unique_id', selectedKeyId);     // 唯一ID
+      formData.append('version', selectedVersion);     // 版本号
+      formData.append('prompt', prompt);               // 提示词
+    
+      if (fileRef.current) {
+        formData.append('file', fileRef.current); // 键名 'file' 需与后端保持一致
+      }
+      await captureAndAlertRequestErrorHoc(
+        createEvaluationApi(formData)
+      )
+
       navigate(-1);
     } finally {
       setLoading(false);
@@ -117,16 +167,24 @@ export default function EvaluatingCreate() {
     });
   };
 
-  // 助手技能发生变化
+  // 类型选择
   const handleTypeChange = (type) => {
     setQuery("");
-    if (type === "flow") {
-      readFlowsFromDatabase(1, 100, "").then((_flow) => {
-        setDataSource(_flow.data);
-      });
-    } else if (type === "assistant") {
-      getAssistantsApi(1, 100, "").then((data) => {
-        setDataSource((data as any).data as AssistantItemDB[]);
+    if (type) {
+      // 兼容旧名
+      const typeMap = {
+        workflow: 'flow',
+        assistant: 'assistant',
+        flow: 'skill'
+      };
+
+      getAppsApi({
+        page: 1,
+        pageSize: 100,
+        keyword: "",
+        type: typeMap[type]
+      }).then((response) => {
+        setDataSource(response.data);
       });
     }
   };
@@ -141,13 +199,21 @@ export default function EvaluatingCreate() {
   };
 
   const handleSearch = useCallback(debounce((value) => {
-    if (selectedType === "flow") {
-      readFlowsFromDatabase(1, 100, value).then((_flow) => {
-        setDataSource(_flow.data);
-      });
-    } else if (selectedType === "assistant") {
-      getAssistantsApi(1, 100, value).then((data) => {
-        setDataSource((data as any).data as AssistantItemDB[]);
+    if (selectedType) {
+      // 兼容旧名
+      const typeMap = {
+        workflow: 'flow',
+        assistant: 'assistant',
+        flow: 'skill'
+      };
+
+      getAppsApi({
+        page: 1,
+        pageSize: 100,
+        keyword: value,
+        type: typeMap[selectedType]
+      }).then((response) => {
+        setDataSource(response.data);
       });
     }
   }, 300), [selectedType])
@@ -204,9 +270,8 @@ export default function EvaluatingCreate() {
                     <SelectContent>
                       <SelectGroup>
                         <SelectItem value="flow">{t("build.skill")}</SelectItem>
-                        <SelectItem value="assistant">
-                          {t("build.assistant")}
-                        </SelectItem>
+                        <SelectItem value="assistant">{t("build.assistant")}</SelectItem>
+                        <SelectItem value="workflow">{t("工作流")}</SelectItem>
                       </SelectGroup>
                     </SelectContent>
                   </Select>
@@ -225,17 +290,19 @@ export default function EvaluatingCreate() {
                       />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectViewport>
-                        <Input
-                          value={query}
-                          onChange={handleInputChange}
-                          className="my-2 mx-auto"
-                          placeholder={t("evaluation.selectInputPlaceholder")}
-                        />
+                      <Input
+                        value={query}
+                        onChange={handleInputChange}
+                        autoFocus
+                        className="my-2 mx-auto"
+                        placeholder={t("evaluation.selectInputPlaceholder")}
+                        onKeyDown={(e) => e.stopPropagation()}
+                      />
+                      <SelectViewport className="h-80">
                         <SelectGroup>
                           {dataSource.map((item) => {
                             return (
-                              <SelectItem value={item.id}>
+                              <SelectItem key={item.id} value={item.id}>
                                 {item.name}
                               </SelectItem>
                             );
@@ -244,13 +311,18 @@ export default function EvaluatingCreate() {
                       </SelectViewport>
                     </SelectContent>
                   </Select>
-                  {selectedType === "flow" && (
+                  {(selectedType === "workflow" || selectedType === "flow") && (
                     <Select
                       value={selectedVersion}
                       onValueChange={(version) => setSelectedVersion(version)}
                       onOpenChange={() => {
-                        if (!selectedKeyId)
-                          return handleError([t("evaluation.enterUniqueId")]);
+                        if (!selectedKeyId) {
+                          if (selectedType === "workflow") {
+                            return handleError([t("请选择工作流")]);
+                          } else if (selectedType === "flow") {
+                            return handleError([t("请选择技能")]);
+                          }
+                        }
                       }}
                     >
                       <SelectTrigger className="min-w-[50px]">
@@ -265,7 +337,7 @@ export default function EvaluatingCreate() {
                             id: selectedKeyId,
                           })?.version_list?.map((item) => {
                             return (
-                              <SelectItem value={item.id}>
+                              <SelectItem key={item.id} value={item.id}>
                                 {item.name}
                               </SelectItem>
                             );

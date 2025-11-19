@@ -1,13 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import axios, { AxiosError, AxiosRequestConfig } from 'axios';
+import { getErrorI18nKey } from '~/pages/appChat/store/constants';
+import i18next from "i18next";
 
+// 报错的时候是否弹窗
+type ErrorOptions = {
+  showError?: boolean;
+};
 
 const customAxios = axios.create({
   baseURL: import.meta.env.BASE_URL
   // 配置
 });
 
-async function _get<T>(url: string, options?: AxiosRequestConfig): Promise<T> {
+async function _get<T>(url: string, options?: AxiosRequestConfig & ErrorOptions): Promise<T> {
   const response = await customAxios.get(url, { ...options });
   return response.data;
 }
@@ -16,9 +22,10 @@ async function _getResponse<T>(url: string, options?: AxiosRequestConfig): Promi
   return await customAxios.get(url, { ...options });
 }
 
-async function _post(url: string, data?: any) {
-  const response = await customAxios.post(url, JSON.stringify(data), {
+async function _post(url: string, data?: any, config?: AxiosRequestConfig) {
+  const response = await customAxios.post(url, config ? data : JSON.stringify(data), {
     headers: { 'Content-Type': 'application/json' },
+    ...config
   });
   return response.data;
 }
@@ -40,15 +47,16 @@ async function _postTTS(url: string, formData: FormData, options?: AxiosRequestC
   return response.data;
 }
 
-async function _put(url: string, data?: any) {
+async function _put(url: string, data?: any, options?: AxiosRequestConfig) {
   const response = await customAxios.put(url, JSON.stringify(data), {
+    ...options,
     headers: { 'Content-Type': 'application/json' },
   });
   return response.data;
 }
 
-async function _delete<T>(url: string): Promise<T> {
-  const response = await customAxios.delete(url);
+async function _delete<T>(url: string, options?: AxiosRequestConfig): Promise<T> {
+  const response = await customAxios.delete(url, { ...options });
   return response.data;
 }
 
@@ -57,8 +65,9 @@ async function _deleteWithOptions<T>(url: string, options?: AxiosRequestConfig):
   return response.data;
 }
 
-async function _patch(url: string, data?: any) {
+async function _patch(url: string, data?: any, options?: AxiosRequestConfig) {
   const response = await customAxios.patch(url, JSON.stringify(data), {
+    ...options,
     headers: { 'Content-Type': 'application/json' },
   });
   return response.data;
@@ -87,7 +96,20 @@ const processQueue = (error: AxiosError | null, token: string | null = null) => 
 };
 
 customAxios.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (response.data.status_code === 403) {
+      // console.log('response :>> ', response);
+      localStorage.setItem('ERROR_REQUEST_PATH', response.config.url || '')
+      location.href = `${__APP_ENV__.BASE_URL}/c/new?error=11403`;
+      return response
+    }
+
+    if (response.config.showError && response.data && response.data.status_code !== 200) {
+      console.log('业务错误:>> ', response.config.url, response.data);
+      window.showToast?.({ message: i18next.t(getErrorI18nKey(response.data.status_code), response.data.data), status: 'error' });
+    }
+    return response;
+  },
   async (error) => {
     const originalRequest = error.config;
     if (!error.response) {
@@ -106,7 +128,8 @@ customAxios.interceptors.response.use(
       originalRequest._retry = true;
 
       if (import.meta.env.MODE === 'production') {
-        location.href = `${location.origin}?from=workspace`
+        localStorage.setItem('LOGIN_PATHNAME', location.pathname)
+        location.href = `${location.origin}/${__APP_ENV__.BISHENG_HOST}?from=workspace`
       }
       // } else {
       //   if (location.pathname.indexOf('login') === -1) {
